@@ -19,7 +19,7 @@ class SearchFilters(BaseModel):
     sizes: FilterValues = Field(default_factory=list, description='Catalog size labels, e.g. small or large; not seat count.')
     product_types: FilterValues = Field(default_factory=list, description='Internal catalog types, e.g. simple, configurable, bundle; not categories.')
     brands: FilterValues = Field(default_factory=list)
-    product_ids: FilterValues = Field(default_factory=list, description='Exact SKU identifiers, useful for product follow-ups.')
+    product_ids: FilterValues = Field(default_factory=list, description='Exact Elasticsearch SKU identifiers explicitly supplied by the customer. Preserve the full code including hyphens and punctuation; never invent an SKU. Use an empty query for SKU-only lookups.')
     group_ids: FilterValues = Field(default_factory=list)
     min_price: Amount | None = None
     max_price: Amount | None = None
@@ -39,6 +39,57 @@ class SearchFilters(BaseModel):
             if lower is not None and upper is not None and lower > upper:
                 raise ValueError(f'min_{key} must not exceed max_{key}')
         return self
+
+
+def category_phrases(value):
+    """Accept common singular/plural category wording without matching descriptions."""
+    value = value.lower()
+    words = value.split()
+    if not words:
+        return [value]
+    last = words[-1]
+    if last.endswith('ies'):
+        alternative = last[:-3] + 'y'
+    elif last.endswith('s') and not last.endswith('ss'):
+        alternative = last[:-1]
+    elif last.endswith('ss'):
+        return [value]
+    else:
+        alternative = last + 's'
+    return [value, ' '.join(words[:-1] + [alternative])]
+
+
+def build_filter_clauses(filters, fields, runtime, currency):
+    """Translate validated preferences: OR within each list, AND across filters."""
+    clauses = [{'range': {fields['stock']: {'gt': 0}}}]
+    phrase_fields = {
+        'categories': 'category', 'colors': 'color', 'materials': 'material',
+        'sizes': 'size', 'brands': 'brand',
+    }
+    exact_fields = {'product_types': 'product_type', 'product_ids': 'id', 'group_ids': 'group_id'}
+    for name, source in phrase_fields.items():
+        values = getattr(filters, name)
+        if name == 'categories':
+            values = list(dict.fromkeys(phrase for value in values for phrase in category_phrases(value)))
+        if values:
+            clauses.append({'bool': {'should': [
+                {'match_phrase': {fields[source] + '.text': value}} for value in values
+            ], 'minimum_should_match': 1}})
+    for name, source in exact_fields.items():
+        values = getattr(filters, name)
+        if values:
+            clauses.append({'terms': {fields[source] + '.keyword': [value.lower() for value in values]}})
+    for name in ('price', 'length_cm', 'width_cm', 'height_cm'):
+        bounds = {operator: getattr(filters, prefix + name)
+                  for prefix, operator in [('min_', 'gte'), ('max_', 'lte')]
+                  if getattr(filters, prefix + name) is not None}
+        if bounds:
+            clauses.append({'range': {'chat_' + name: bounds}})
+    if 'chat_currency' in runtime:
+        clauses.append({'term': {'chat_currency': filters.currency or currency}})
+    if filters.on_sale is not None:
+        clauses.append({'term': {'chat_on_sale': filters.on_sale}})
+    return clauses
 
 
 # Parse only a number (comma thousands, dot decimal) plus an optional ISO code.

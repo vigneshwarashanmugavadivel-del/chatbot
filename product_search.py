@@ -12,9 +12,9 @@ from urllib.parse import urlparse
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
 
-from search_filters import Region, SearchFilters, runtime_fields, strict_schema
+from search_filters import Region, SearchFilters, build_filter_clauses, category_phrases, runtime_fields, strict_schema
 
-from example.text_search import SearchConfig, assemble_response, build_query
+from example.text_search import SearchConfig, assemble_response
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +25,7 @@ class SearchUnavailable(Exception):
 
 class ProductSearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    query: str = Field(default="", max_length=300, description="Short product keywords; empty string browses using filters.")
+    query: str = Field(default="", max_length=300, description="Product names and descriptive keywords searched across title, short description, description and other catalog text fields. Do not put these terms only in categories. Empty string is for filter-only browsing.")
     filters: SearchFilters = Field(default_factory=SearchFilters)
     region: Region | None = Field(default=None, description="Country storefront; null uses configured default. AE, SA, QA, OM or BH.")
     sort: Literal["relevance", "price_asc", "price_desc", "title_asc"] = "relevance"
@@ -165,8 +165,12 @@ class ProductSearcher:
             "url": os.getenv("ES_URL_FIELD", "link"),
             "image_url": os.getenv("ES_IMAGE_FIELD", "image_link"),
         }
-        default_search_fields = ",".join(f"{self.fields[key]}.text" for key in
-                                         ("title", "category", "description", "full_description", "material", "color", "id", "group_id"))
+        default_search_fields = ",".join(
+            f"{self.fields[key]}.text^{weight}" for key, weight in (
+                ("description", 4), ("title", 3), ("full_description", 2),
+                ("category", 1), ("material", 1), ("color", 1),
+            )
+        )
         self.config = SearchConfig(
             index=self.index,
             search_fields=tuple(field.strip() for field in os.getenv("ES_SEARCH_FIELDS", default_search_fields).split(",") if field.strip()),
@@ -203,46 +207,47 @@ class ProductSearcher:
         localized = {'title','description','full_description','material','color','size','dimension','price','sale_price','stock','url'}
         fields = {key: f"{selected_region}.{field}" if selected_region and key in localized else field
                   for key, field in self.fields.items()}
-        config = SearchConfig(index=self.index, search_fields=self.config.search_fields,
-                              source_fields=tuple(dict.fromkeys(fields.values())),
-                              collapse_field=self.config.collapse_field, autocorrect=False)
+        search_fields = []
+        for configured in self.config.search_fields:
+            name, separator, boost = configured.partition('^')
+            if selected_region:
+                for key in localized:
+                    original = self.fields[key]
+                    if name == original or name.startswith(original + '.'):
+                        name = fields[key] + name[len(original):]
+                        break
+            search_fields.append(name + (separator + boost if separator else ''))
+        # Identifiers have their own exact filters and never enter fuzzy text search.
+        identifier_fields = {fields[key] + suffix for key in ('id', 'group_id')
+                             for suffix in ('', '.text', '.keyword')}
+        search_fields = [field for field in search_fields
+                         if field.partition('^')[0] not in identifier_fields]
+        if params.query and not search_fields:
+            raise SearchUnavailable("No searchable text fields are configured.")
         request = {"search_query": params.query, "page_num": params.page, "num_results": params.limit}
-        body = build_query(config, request)
-        if params.query:
-            body["query"]["bool"]["must"][0]["simple_query_string"]["flags"] = "NONE"
-        constraints = [{"range": {fields['stock']: {"gt": 0}}}]
         filters = params.filters
-        # OR within a filter, AND across filters. Attribute phrases cannot match descriptions.
-        for key, source in [('categories','category'), ('colors','color'), ('materials','material'),
-                            ('sizes','size'), ('brands','brand')]:
-            values = getattr(filters, key)
-            if values:
-                if key == 'categories':
-                    values = list(dict.fromkeys(phrase for value in values for phrase in category_phrases(value)))
-                constraints.append({'bool': {'should': [
-                    {'match_phrase': {fields[source] + '.text': value}} for value in values
-                ], 'minimum_should_match': 1}})
-        for key, source in [('product_types','product_type'), ('product_ids','id'), ('group_ids','group_id')]:
-            values = getattr(filters, key)
-            if values:
-                constraints.append({'terms': {fields[source] + '.keyword': [v.lower() for v in values]}})
         runtime = runtime_fields(self.fields, filters, selected_region, currency, params.sort)
+        text_clause = {"multi_match": {
+            "query": params.query, "fields": search_fields,
+            "type": "best_fields", "operator": "and", "fuzziness": "AUTO",
+            "prefix_length": 1, "max_expansions": 50,
+        }} if params.query else {"match_all": {}}
+        body = {
+            "query": {"bool": {
+                "must": [text_clause],
+                "filter": build_filter_clauses(filters, fields, runtime, currency),
+            }},
+            "_source": list(dict.fromkeys(fields.values())),
+            "from": (params.page - 1) * params.limit,
+            "size": params.limit,
+            "track_total_hits": True,
+            "sort": [{"_score": {"order": "desc"}}, {"mad_id": {"order": "desc"}}],
+        }
+        if self.config.collapse_field:
+            body['collapse'] = {'field': self.config.collapse_field}
+            body['aggs'] = {'unique_recs_count': {'cardinality': {'field': self.config.collapse_field}}}
         if runtime:
             body['runtime_mappings'] = runtime
-        for name, field in [('price','chat_price'), ('length_cm','chat_length_cm'),
-                            ('width_cm','chat_width_cm'), ('height_cm','chat_height_cm')]:
-            bounds = {}
-            if getattr(filters, f'min_{name}') is not None:
-                bounds['gte'] = getattr(filters, f'min_{name}')
-            if getattr(filters, f'max_{name}') is not None:
-                bounds['lte'] = getattr(filters, f'max_{name}')
-            if bounds:
-                constraints.append({'range': {field: bounds}})
-        if 'chat_currency' in runtime:
-            constraints.append({'term': {'chat_currency': filters.currency or currency}})
-        if filters.on_sale is not None:
-            constraints.append({'term': {'chat_on_sale': filters.on_sale}})
-        body['query']['bool']['filter'] = constraints
         if params.sort.startswith('price_'):
             body['sort'] = [{'chat_price': {'order': 'asc' if params.sort == 'price_asc' else 'desc', 'missing': '_last'}}, {'mad_id': 'desc'}]
         elif params.sort == 'title_asc':
@@ -494,27 +499,6 @@ def get_path(source, field):
     return value
 
 
-def category_phrases(value):
-    """Accept common singular/plural category wording without matching descriptions."""
-    value = value.lower()
-    words = value.split()
-    if not words:
-        return [value]
-    last = words[-1]
-    aliases = {'couch': 'sofa', 'couches': 'sofa', 'sofas': 'sofa'}
-    if last in aliases:
-        alternative = aliases[last]
-    elif last.endswith('ies'):
-        alternative = last[:-3] + 'y'
-    elif last.endswith('s') and not last.endswith('ss'):
-        alternative = last[:-1]
-    elif last.endswith('ss'):
-        return [value]
-    else:
-        alternative = last + 's'
-    return [value, ' '.join(words[:-1] + [alternative])]
-
-
 def parse_price(raw, default_currency='AED'):
     if raw is None or isinstance(raw, (bool, list, dict)):
         return None
@@ -540,7 +524,10 @@ def resolve_search_request(tool: SearchToolRequest, previous: ProductSearchReque
     fresh = tool.intent == 'new_search' or unrelated or (tool.intent is None and changed)
     values = tool.model_dump(exclude={'intent', 'explicit_filters'})
     if fresh:
-        values['filters'] = tool.filters.model_dump(include=set(tool.explicit_filters) | {'categories'})
+        retained = set(tool.explicit_filters)
+        if 'product_ids' not in retained:
+            retained.add('categories')
+        values['filters'] = tool.filters.model_dump(include=retained)
         values['page'] = 1
         if previous and values['query'] and values['query'] == previous.query and new:
             values['query'] = ''
@@ -552,6 +539,6 @@ def resolve_search_request(tool: SearchToolRequest, previous: ProductSearchReque
 
 SEARCH_TOOL = {
     'type': 'function', 'name': 'search_products', 'strict': True,
-    'description': "Search ONLY in-stock Alhuzaifa products. Use query for general keywords or style; put category, colors, materials, size labels, brands, internal product types, SKU/group IDs, budget, currency, sale status and measured dimensions in filters. Empty query browses by filters. Attribute phrases match only their own fields (beige includes light beige). OR within arrays; AND across filters. Preserve active constraints for refinements. For a new category use intent=new_search and explicit_filters listing only newly stated or explicitly retained preferences; clear inherited filters from the previous category. Never relax filters within the same search to produce results. Budget and sort use positive displayed sale price when lower than regular, otherwise regular. Currency defaults to storefront currency; no conversion. Region selects AE/SA/QA/OM/BH storefront with its own stock and prices. Only unambiguous, labelled cm/mm/m measurements support dimension ranges; unknown measurements are excluded. Do not confuse catalog size labels with dimensions or seating capacity. Never swap length and width. Keep page size stable when paging; reset page to 1 when filters change.",
+    'description': "Search ONLY in-stock Alhuzaifa products. Use query to search product names, features and descriptive keywords across title, short description and full description as well as other text fields. Do not turn names or features into category filters. For broad discovery leave categories empty; apply categories only for genuine category restrictions. Put structured colour, material, size, brand, type, SKU/group, budget, currency, sale and dimension constraints in filters. Empty query browses by filters. Attribute phrases match only their own fields (beige includes light beige). OR within arrays; AND across filters. Preserve active constraints for refinements. For a new category use intent=new_search and explicit_filters listing only newly stated or explicitly retained preferences; clear inherited filters from the previous category. Never relax filters within the same search to produce results. Budget and sort use positive displayed sale price when lower than regular, otherwise regular. Currency defaults to storefront currency; no conversion. Region selects AE/SA/QA/OM/BH storefront with its own stock and prices. Only unambiguous, labelled cm/mm/m measurements support dimension ranges; unknown measurements are excluded. Do not confuse catalog size labels with dimensions or seating capacity. Never swap length and width. Keep page size stable when paging; reset page to 1 when filters change.",
     'parameters': strict_schema(SearchToolRequest.model_json_schema()),
 }

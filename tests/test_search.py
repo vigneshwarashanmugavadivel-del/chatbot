@@ -38,10 +38,10 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(body['collapse']['field'], 'parent_id')
             self.assertEqual(body['from'], 6)
             self.assertEqual(body['size'], 6)
-            query = body['query']['bool']['must'][0]['simple_query_string']
-            self.assertIn('title.text', query['fields'])
-            self.assertEqual(query['minimum_should_match'], '100%')
-            self.assertEqual(query['flags'], 'NONE')
+            query = body['query']['bool']['must'][0]['multi_match']
+            self.assertIn('title.text^3', query['fields'])
+            self.assertEqual(query['operator'], 'and')
+            self.assertEqual(query['fuzziness'], 'AUTO')
             return httpx.Response(200, json={'responses': [{
                 'hits': {'total': {'value': 12}, 'hits': [{'_source': {
                     'sku': 'SOFA-1', 'title': 'Cloud', 'price': '1,214 AED',

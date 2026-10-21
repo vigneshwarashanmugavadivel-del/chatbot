@@ -40,11 +40,17 @@ Restart after changing `.env`. Your account must have API billing and access to 
 
 ## Elasticsearch implementation
 
-`product_search.py` reuses `build_query` and `assemble_response` from the supplied `example/text_search.py`. It sends asynchronous HTTP `_msearch` requests using `httpx`, so the legacy Elasticsearch 7 client from the standalone example is not required. The example file is unchanged.
+`product_search.py` builds the search request and reuses `assemble_response` from the supplied `example/text_search.py`. It sends asynchronous HTTP `_msearch` requests using `httpx`. The example file is unchanged.
 
-The query preserves the sample's phrase boosts, all-word matching, relevance sorting, `mad_id` tie-breaker, and `parent_id` collapse. Queries treat punctuation as literal text rather than query-string operators. Only selected product fields are returned; internal index metadata and credentials are never sent to the model.
+Text searches use one Elasticsearch `multi_match` clause over configured fields with `fuzziness: AUTO` and `operator: and`. All query words must match within a field. There are no parallel strict-query branches, phrase-boost loops, product dictionaries, or automatic SKU boosts. Relevance sorting, the `mad_id` tie-breaker, pagination, and optional `parent_id` collapse remain.
 
-The live mapping uses `keyword` fields with `.text` subfields. Search uses `.text` for title, category, descriptions, material, color, SKU, and item group. Override `ES_SEARCH_FIELDS` with a comma-separated list if needed. `ES_*_FIELD` settings map source data to product cards; `ES_URL_FIELD` and `ES_IMAGE_FIELD` default to `link` and `image_link`.
+Customers can ask for an exact SKU, for example “Show me SKU SSRIANA3SG5”. The model puts the complete code in `filters.product_ids` with an empty text query, clearing unrelated previous preferences for a new lookup. The backend uses exact case-normalized `.keyword` matching and preserves punctuation. Explicit text and SKU constraints, if both supplied, must both match. SKU/group fields never participate in fuzzy text search.
+
+`search_filters.build_filter_clauses` translates validated preferences into filter clauses shared by text searches, SKU lookups, browsing, and similarity search. Structured filters and availability checks remain enforced. Fuzziness tolerates nearby spellings and many plural differences, but does not provide semantic synonyms or full linguistic stemming. Full stemming requires compatible index/search analyzers and reindexing into a new index.
+
+The live mapping uses `keyword` fields with `.text` subfields. Default relevance weights are short description `^4`, title `^3`, full description `^2`, then category, material, and color `^1`. These weights influence relevance scores rather than imposing a strict ordering between every pair of results. Override `ES_SEARCH_FIELDS` with a comma-separated list, including optional boosts such as `title.text^2`. `ES_*_FIELD` settings map source data to product cards; `ES_URL_FIELD` and `ES_IMAGE_FIELD` default to `link` and `image_link`.
+
+Broad product-name and descriptive requests use `query` to search title, short description and full description alongside the other text fields. For example, `{"query":"curved sofa"}` can match descriptive catalog text without requiring a category named “curved sofa”. Category filters are reserved for actual category restrictions and can be combined with keywords, e.g. `{"query":"marble","filters":{"categories":["dining table"]}}`. In a regional storefront, applicable text fields use that region's title/descriptions rather than root text.
 
 Every search requires **positive stock** before ranking, pagination, and variant collapse. A second check removes any unavailable or unknown-stock product before returning results to the model or UI. Customers cannot disable this rule. Old chat results must be searched again before recommendation.
 

@@ -57,3 +57,14 @@ class SearchIntentTests(unittest.TestCase):
         tool = SearchToolRequest(query=self.previous.query,intent='new_search',filters={'categories':['tables']})
         result=resolve_search_request(tool,self.previous)
         self.assertEqual(result.query,'')
+
+    def test_sku_lookup_drops_old_category_and_preferences(self):
+        tool = SearchToolRequest(query='', intent='new_search', explicit_filters=['product_ids'],
+                                 filters={**self.previous.filters.model_dump(), 'product_ids':['SSRIANA3SG5']})
+        result = resolve_search_request(tool, self.previous)
+        self.assertEqual(result.filters.product_ids, ['SSRIANA3SG5'])
+        self.assertEqual(result.filters.categories, [])
+        self.assertEqual(result.filters.colors, [])
+        self.assertIsNone(result.filters.max_price)
+        self.assertEqual(result.region, 'AE')
+        self.assertEqual(result.page, 1)

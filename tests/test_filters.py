@@ -1,5 +1,6 @@
 import json
 import unittest
+from dataclasses import replace
 from decimal import Decimal
 from unittest.mock import patch
 
@@ -67,6 +68,69 @@ class FilterTests(unittest.IsolatedAsyncioTestCase):
         category = [c for c in clauses if 'bool' in c][0]
         phrases = [item['match_phrase']['category_vue.text'] for item in category['bool']['should']]
         self.assertEqual(phrases, ['sofas', 'sofa'])
+
+    async def test_keyword_queries_search_title_and_both_descriptions_without_category_restriction(self):
+        body, *_ = self.searcher.search_body(ProductSearchRequest(query='curved sofa'))
+        query = body['query']['bool']['must'][0]['multi_match']
+        self.assertEqual(query['query'], 'curved sofa')
+        for field in ['title.text^3', 'short_description.text^4', 'description.text^2']:
+            self.assertIn(field, query['fields'])
+        self.assertNotIn('category_vue', json.dumps(body['query']['bool']['filter']))
+
+    async def test_custom_search_fields_are_localized_and_boosts_preserved(self):
+        self.searcher.config = replace(self.searcher.config, search_fields=('title.text^3',))
+        body, *_ = self.searcher.search_body(ProductSearchRequest(query='sofas', region='AE'))
+        query = body['query']['bool']['must'][0]['multi_match']
+        self.assertEqual(query['fields'], ['region_ae_en.title.text^3'])
+        self.assertNotIn('should', body['query']['bool'])
+
+    async def test_single_generic_text_clause_preserves_query_and_constraints(self):
+        for original in ['sofas', 'curved sofas', 'tables in marble', 'shelves', 'unlistedword']:
+            body, *_ = self.searcher.search_body(ProductSearchRequest(
+                query=original, filters={'colors':['Beige'], 'max_price':4000}))
+            clauses = body['query']['bool']['must']
+            self.assertEqual(len(clauses), 1)
+            fuzzy = clauses[0]['multi_match']
+            self.assertEqual(fuzzy['query'], original)
+            self.assertEqual(fuzzy['fuzziness'], 'AUTO')
+            self.assertEqual(fuzzy['operator'], 'and')
+            for field in ['title.text^3', 'short_description.text^4', 'description.text^2']:
+                self.assertIn(field, fuzzy['fields'])
+            constraints = json.dumps(body['query']['bool']['filter'])
+            self.assertIn('color.text', constraints)
+            self.assertIn('4000', constraints)
+            self.assertNotIn('simple_query_string', json.dumps(body))
+            self.assertNotIn('should', body['query']['bool'])
+
+    async def test_identifiers_are_excluded_even_from_custom_text_fields(self):
+        self.searcher.config = replace(self.searcher.config, search_fields=(
+            'title.text', 'sku.text^10', 'item_group_id.keyword'))
+        body, *_ = self.searcher.search_body(ProductSearchRequest(query='sofa'))
+        self.assertEqual(body['query']['bool']['must'][0]['multi_match']['fields'], ['title.text'])
+
+    async def test_exact_sku_preserves_punctuation_and_does_not_require_text(self):
+        body, *_ = self.searcher.search_body(ProductSearchRequest(
+            region='AE', filters={'product_ids':[' SSZW23034-4 SEATER-G1 ']}))
+        self.assertEqual(body['query']['bool']['must'], [{'match_all': {}}])
+        self.assertIn({'terms': {'sku.keyword':['sszw23034-4 seater-g1']}}, body['query']['bool']['filter'])
+        self.assertIn({'range': {'region_ae_en.stock': {'gt': 0}}}, body['query']['bool']['filter'])
+
+    async def test_sku_filter_has_no_fuzzy_alternative(self):
+        body, *_ = self.searcher.search_body(ProductSearchRequest(filters={'product_ids':['SKU-123']}))
+        self.assertIn({'terms': {'sku.keyword':['sku-123']}}, body['query']['bool']['filter'])
+        self.assertNotIn('fuzziness', json.dumps(body))
+
+    async def test_keyword_search_can_be_combined_with_an_explicit_category(self):
+        body, *_ = self.searcher.search_body(ProductSearchRequest(query='marble', filters={'categories':['dining table']}))
+        self.assertEqual(body['query']['bool']['must'][0]['multi_match']['query'], 'marble')
+        self.assertIn('category_vue.text', json.dumps(body['query']['bool']['filter']))
+
+    async def test_region_keyword_search_uses_the_regions_title_and_descriptions(self):
+        body, *_ = self.searcher.search_body(ProductSearchRequest(query='curved sofa', region='AE'))
+        fields = body['query']['bool']['must'][0]['multi_match']['fields']
+        for field in ['region_ae_en.title.text^3','region_ae_en.short_description.text^4','region_ae_en.description.text^2']:
+            self.assertIn(field, fields)
+        self.assertNotIn('title.text', fields)
 
     async def test_out_of_stock_unknown_and_negative_stock_are_never_returned(self):
         await self.searcher.client.aclose()
