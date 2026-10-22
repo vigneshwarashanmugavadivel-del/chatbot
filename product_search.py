@@ -11,8 +11,9 @@ from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel, ConfigDict, Field
+from agent_logging import log_es_request, log_es_response, log_active
 
-from search_filters import Region, SearchFilters, build_filter_clauses, category_phrases, runtime_fields, strict_schema
+from search_filters import Region, SearchFilters, build_filter_clauses, runtime_fields, strict_schema
 
 from example.text_search import SearchConfig, assemble_response
 
@@ -30,18 +31,7 @@ class ProductSearchRequest(BaseModel):
     region: Region | None = Field(default=None, description="Country storefront; null uses configured default. AE, SA, QA, OM or BH.")
     sort: Literal["relevance", "price_asc", "price_desc", "title_asc"] = "relevance"
     page: int = Field(default=1, ge=1, le=20)
-    limit: int = Field(default=8, ge=1, le=8, description='Return 8 recommendations by default; fewer only when the customer requests a smaller number.')
-
-
-class SearchToolRequest(ProductSearchRequest):
-    intent: Literal['new_search', 'refinement'] | None = Field(default=None,
-        description='new_search for a different product category or a fresh request; refinement for changes to the current search.')
-    explicit_filters: list[Literal[
-        'categories', 'colors', 'materials', 'sizes', 'product_types', 'brands', 'product_ids', 'group_ids',
-        'min_price', 'max_price', 'currency', 'on_sale', 'min_length_cm', 'max_length_cm',
-        'min_width_cm', 'max_width_cm', 'min_height_cm', 'max_height_cm',
-    ]] = Field(default_factory=list, max_length=18,
-        description='For a new search: filter names explicitly requested in the latest user message, including preferences explicitly requested to carry over. Do not list filters merely remembered from the old category. Include currency when carrying over a budget in a specific currency.')
+    limit: int = Field(default=8, ge=1, le=8, description='Maximum number of records for this retrieval; defaults to 8.')
 
 
 class ColorOption(BaseModel):
@@ -106,6 +96,7 @@ class SearchResult(BaseModel):
     pages: int
     limit: int = 8
     similar_to: SimilarReference | None = None
+    follow_ups: list[str] = Field(default_factory=list)
     corrected_query: str | None = None
     applied_filters: dict = Field(default_factory=dict)
     sort: str = "relevance"
@@ -186,6 +177,7 @@ class ProductSearcher:
         elif os.getenv("ES_USERNAME") and os.getenv("ES_PASSWORD"):
             auth = (os.environ["ES_USERNAME"], os.environ["ES_PASSWORD"])
         self.client = httpx.AsyncClient(
+            event_hooks={'request': [log_es_request], 'response': [log_es_response]},
             headers=headers, auth=auth, timeout=self.config.timeout,
             verify=os.getenv("ES_VERIFY_TLS", "true").lower() not in {"false", "0", "no"},
         )
@@ -283,6 +275,7 @@ class ProductSearcher:
             assembled = assemble_response(result, request, collapse_field=self.config.collapse_field)
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
             logger.warning("Product search failed (%s)", type(exc).__name__)
+            log_active('elasticsearch.error', error_type=type(exc).__name__, error=str(exc))
             raise SearchUnavailable("Product search is temporarily unavailable. Please try again.") from None
         products = [product for source in assembled["Products"]
                     if (product := self.normalize_product(source, fields, currency)) is not None]
@@ -393,6 +386,7 @@ class ProductSearcher:
             return results
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
             logger.warning("Variant search failed (%s)", type(exc).__name__)
+            log_active('elasticsearch.error', error_type=type(exc).__name__, error=str(exc))
             raise SearchUnavailable("Colour options are temporarily unavailable. Please try again.") from None
 
     async def attach_color_options(self, products, params):
@@ -511,34 +505,15 @@ def parse_price(raw, default_currency='AED'):
     return amount, match['prefix'] or match['suffix'] or default_currency
 
 
-def resolve_search_request(tool: SearchToolRequest, previous: ProductSearchRequest | None):
-    """Enforce a fresh filter set when moving to a new product category."""
-    old = previous.filters.categories if previous else []
-    new = tool.filters.categories
-    old_phrases = {phrase for category in old for phrase in category_phrases(category)}
-    new_phrases = {phrase for category in new for phrase in category_phrases(category)}
-    changed = bool(old_phrases and new_phrases and old_phrases.isdisjoint(new_phrases))
-    old_words = {word for phrase in old_phrases for word in re.findall(r'\w+', phrase)}
-    new_words = {word for phrase in new_phrases for word in re.findall(r'\w+', phrase)}
-    unrelated = changed and old_words.isdisjoint(new_words)
-    fresh = tool.intent == 'new_search' or unrelated or (tool.intent is None and changed)
-    values = tool.model_dump(exclude={'intent', 'explicit_filters'})
-    if fresh:
-        retained = set(tool.explicit_filters)
-        if 'product_ids' not in retained:
-            retained.add('categories')
-        values['filters'] = tool.filters.model_dump(include=retained)
-        values['page'] = 1
-        if previous and values['query'] and values['query'] == previous.query and new:
-            values['query'] = ''
-    # The storefront is session context, not a preference belonging to one category.
-    if values['region'] is None and previous:
-        values['region'] = previous.region
-    return ProductSearchRequest.model_validate(values)
-
-
 SEARCH_TOOL = {
     'type': 'function', 'name': 'search_products', 'strict': True,
-    'description': "Search ONLY in-stock Alhuzaifa products. Use query to search product names, features and descriptive keywords across title, short description and full description as well as other text fields. Do not turn names or features into category filters. For broad discovery leave categories empty; apply categories only for genuine category restrictions. Put structured colour, material, size, brand, type, SKU/group, budget, currency, sale and dimension constraints in filters. Empty query browses by filters. Attribute phrases match only their own fields (beige includes light beige). OR within arrays; AND across filters. Preserve active constraints for refinements. For a new category use intent=new_search and explicit_filters listing only newly stated or explicitly retained preferences; clear inherited filters from the previous category. Never relax filters within the same search to produce results. Budget and sort use positive displayed sale price when lower than regular, otherwise regular. Currency defaults to storefront currency; no conversion. Region selects AE/SA/QA/OM/BH storefront with its own stock and prices. Only unambiguous, labelled cm/mm/m measurements support dimension ranges; unknown measurements are excluded. Do not confuse catalog size labels with dimensions or seating capacity. Never swap length and width. Keep page size stable when paging; reset page to 1 when filters change.",
-    'parameters': strict_schema(SearchToolRequest.model_json_schema()),
+    'description': 'Read-only catalog search. Returns a retrieval_id and product records to the model without displaying products or changing preferences. Query is full text across configured fields, requiring all query terms within one field, with fuzzy matching. Exact SKU/group identifiers use filters.product_ids/group_ids. Empty query supports filter-only browsing. Filter arrays use OR internally; different filters use AND. Arguments are the complete independent requirements for this retrieval. Region chooses storefront stock/prices/currency. Prices and sorting use effective displayed prices without currency conversion; dimensions use labelled cm measurements. Positive availability is enforced. Pagination and page size apply to this call only.',
+    'parameters': strict_schema(ProductSearchRequest.model_json_schema()),
+}
+
+
+PRODUCT_DETAILS_TOOL = {
+    'type': 'function', 'name': 'get_product_details', 'strict': True,
+    'description': 'Read-only catalog retrieval for factual context. Returns a retrieval_id and product records without displaying anything or changing preferences. Uses the same independent text, identifier, filter and region parameters as catalog search. Multiple identifiers in filters.product_ids are alternatives; multiple words in query must match together. Returned products include specifications and known colour options, and can be selected in a later display action.',
+    'parameters': strict_schema(ProductSearchRequest.model_json_schema()),
 }

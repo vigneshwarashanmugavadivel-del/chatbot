@@ -26,16 +26,19 @@ Restart after changing `.env`. Your account must have API billing and access to 
 ## Current functionality
 
 - Product search, general furniture advice, and conversational refinement.
-- After recommendations, the assistant asks one relevant question to add a missing filter, usually budget first, then colour, material or category-appropriate dimensions. Short answers refine the prior search while preserving other requirements. It is instructed to skip preferences already answered or declined and ask before broadening a search with no matches. Show similar also adds a question about a missing budget, colour or material preference.
-- Clickable filter suggestions appear below follow-up replies. Budget ceilings are rounded from displayed prices in the same currency; colour choices include returned variants, materials are drawn from returned specifications, and dimension choices preserve the requested axis. Clicking sends a readable chat message with the active search context. Empty results can offer explicit links to remove existing price/colour/material constraints. Suggestions are replaced after the next successful reply and disabled during requests; free-text input remains available.
-- Replies stream into the chat as text is generated. Status messages show request interpretation, catalog search, and reply generation; product cards appear as soon as search finishes.
+- The model owns retrieval, presentation and preference decisions. `search_products`, `get_product_details` and `find_similar_products` return catalog evidence with per-turn retrieval IDs; they never display products or update customer preferences. `display_products` explicitly selects ordered recommendation cards, a comparison, or text-only presentation. Every selected retrieval/product reference is validated against actual records from this turn. Comparison values come directly from the catalog; missing facts are labelled "Not listed". Comparison columns supplied for cards or text are ignored rather than causing a display failure.
+- `update_preferences` explicitly saves or clears the complete search state for subsequent messages. Temporary investigation queries and presentation changes are independent of those saved preferences. The model receives confirmation/errors for every action and may revise its next decision without a fixed sequence or call cap.
+- Replies are short conversational paragraphs rather than product/specification reports. A direct question is asked only when clarification is necessary; recommendations do not automatically end in a filter question.
+- Four optional follow-up questions are generated from the conversation, latest reply, active preferences and actual catalog results together with the reply in the final structured model response. They can cover comparisons, styling, product details, related products or refinements; there are no category-specific question lists or browser-side filter heuristics. Clicking a question sends its text as an ordinary chat message while preserving the active search context. Suggestions also work for advice without product cards, replace the previous set, and are disabled while busy.
+- The final chat model call returns both `reply` and four `follow_ups`; no extra suggestion call is made. Only the reply string is decoded and streamed to the browser, including split JSON escapes and Unicode characters. Suggestions appear when that same response finishes. A turn with no tools uses one model call; a turn with one tool round normally uses two. Show similar uses the same agent and combined final response.
+- Replies stream into the chat as text is generated. Status messages show progress; product visuals appear only when an explicit display action is accepted, independently of retrieval completion.
 - Catalog-backed product cards show larger images, a description, labelled brand/colour/material/dimension/size specifications, SKU, and formatted prices. Product navigation links and stock-status wording are hidden in the demo UI; availability checks remain enforced internally.
 - Cards show selectable in-stock colour options. Selecting a colour refreshes that card's image, price, SKU, and specifications directly from Elasticsearch without a model call.
-- Each card has a **Show similar** button. It adds up to eight alternative product cards above a short reply, without calling the language model. Similarity uses Elasticsearch `more_like_this` over product text/materials plus a colour preference, with the source category required. The source SKU and its parent/group family are excluded. Budget, colour, material, size, dimension, sale, currency, brand and region requirements remain; specific SKU/group restrictions and the original text query are replaced to allow alternatives. Results are ranked by similarity rather than the previous price/name sort. If no alternatives meet the filters, the UI reports this without broadening them.
+- Each card has a **Show similar** button. It sends an ordinary chat request through the agent, which can retrieve alternatives, select their presentation and generate the reply plus four follow-up questions in the same final response. The underlying similarity retrieval excludes the source family and retains the supplied non-identity constraints. Direct `/api/products/similar` remains a read-only retrieval endpoint without model generation.
 - History stays in browser memory; reload or New chat clears it.
 - The latest ten turns are sent as context. OpenAI response storage is disabled using `store=False`; provider retention policies still apply.
 - API credentials stay on the backend. Missing configuration and upstream errors produce readable messages.
-- The model calls `search_products(query, filters, region, sort, page, limit)` and receives actual catalog results before responding. The server validates parameters, limits searches to eight products per call and two calls per chat request, and returns product cards directly from the search results.
+- The model calls the available retrieval and action tools and receives their results before responding. The server validates parameters and limits results to eight products per search. The model chooses its tools, arguments, order and number of calls; the loop continues until it returns a final answer, with no application-defined tool-call cap. Each tool result, including empty results and validation errors, is returned to the model for its next decision. Per-request upstream timeouts still apply, and disconnecting the browser cancels the stream.
 - No cart actions, order tracking, or policy lookup yet.
 
 ## Elasticsearch implementation
@@ -44,7 +47,7 @@ Restart after changing `.env`. Your account must have API billing and access to 
 
 Text searches use one Elasticsearch `multi_match` clause over configured fields with `fuzziness: AUTO` and `operator: and`. All query words must match within a field. There are no parallel strict-query branches, phrase-boost loops, product dictionaries, or automatic SKU boosts. Relevance sorting, the `mad_id` tie-breaker, pagination, and optional `parent_id` collapse remain.
 
-Customers can ask for an exact SKU, for example “Show me SKU SSRIANA3SG5”. The model puts the complete code in `filters.product_ids` with an empty text query, clearing unrelated previous preferences for a new lookup. The backend uses exact case-normalized `.keyword` matching and preserves punctuation. Explicit text and SKU constraints, if both supplied, must both match. SKU/group fields never participate in fuzzy text search.
+Customers can ask for an exact SKU, for example “Show me SKU SSRIANA3SG5”. The model can put the complete code in `filters.product_ids` with an empty text query; lookup arguments are independent of saved preferences. The backend uses exact case-normalized `.keyword` matching and preserves punctuation. Explicit text and SKU constraints, if both supplied, must both match. SKU/group fields never participate in fuzzy text search.
 
 `search_filters.build_filter_clauses` translates validated preferences into filter clauses shared by text searches, SKU lookups, browsing, and similarity search. Structured filters and availability checks remain enforced. Fuzziness tolerates nearby spellings and many plural differences, but does not provide semantic synonyms or full linguistic stemming. Full stemming requires compatible index/search analyzers and reindexing into a new index.
 
@@ -66,9 +69,9 @@ Values within one attribute array are alternatives (OR); different filters combi
 
 Prices and measurements are parsed using request-scoped Elasticsearch runtime fields in `search_filters.py`, **without changing mappings or documents**. This uses the displayed price strings such as `1,214 AED`; the regional `price_vue`/`sale_price_vue` values were observed to differ from the displayed strings. For production scale, ingest normalized prices and measurements into dedicated indexed numeric fields instead of computing them per request.
 
-Applied constraints appear above the product cards. The browser sends the last validated request as `search_state`, allowing follow-ups to retain their budget, attributes, region and sort. The model is instructed to ask before relaxing constraints. This is conversation-based interpretation, not a deterministic preference parser.
+Applied constraints appear above the product cards. The browser sends the last explicitly saved preferences as `search_state`. Each displayed card retains its own retrieval request for colour-selection context; displaying a card does not overwrite saved preferences. The model must retain explicit constraints unless the customer requests a change. This is conversation-based interpretation, not a deterministic preference parser.
 
-Switching product categories starts a fresh search: “show tables” after a sofa search clears the sofa's budget, colour, material and dimensions. Region remains session context. The search tool declares `intent` and `explicit_filters`; the backend removes inherited constraints on new searches and guards unrelated category changes even if mislabelled as refinements. “Show tables with the same budget” explicitly carries only that budget/currency forward. Same-category changes such as “only beige ones”, “cheaper” and narrowing tables to dining tables retain other constraints. The model interprets which preferences the customer explicitly requests; the server validates and applies the resulting reset policy.
+Preference changes are model decisions executed through `update_preferences`. The action supplies a complete validated state, or null to clear it. Retrieval requests remain independent and the backend does not infer category changes or reset preferences from a query. Every displayed item retains the request that produced it, so colour/variant actions can validate that item's context without overwriting saved customer preferences.
 
 Colour options are fetched in one batched `_msearch` for the displayed product families. Family matching uses the configured collapse/parent identifier, then a nonempty item group if no parent is known; products without either identifier keep only their known current colour. Records are never joined by title or an empty group. Each colour has a representative matching SKU; duplicate colour labels are combined. Only in-stock variants satisfying the other structured filters are offered. Discovering other colours drops the original free-text query, colour filter and specific-SKU filter, while retaining budget, material, category, size, dimensions, currency, sale status, group constraints and region.
 
@@ -78,7 +81,7 @@ Selecting a colour rechecks the original and selected SKUs, their family relatio
 
 `ES_BRAND_FIELD` and `ES_DIMENSION_FIELD` default to `brand` and `dimension`. `ES_REGION_FIELD`, when set, must be one of the known `region_<country>_<language>` paths. `ES_POC_MODE` is retained but does not change behavior. Autocorrection from the standalone example remains disabled.
 
-Product descriptions are converted to plain text; links must use HTTP(S). Search timeouts, upstream errors, partial results, and empty matches are handled separately. A failed search is reported to the user, never replaced with invented products. Search totals for collapsed groups use Elasticsearch's approximate cardinality aggregation, matching the sample.
+Product descriptions are converted to plain text; links must use HTTP(S). Search timeouts, upstream errors, partial results, and empty matches are handled separately. A failed search is reported to the user, never replaced with invented products. Retrieval totals for collapsed groups use Elasticsearch's approximate cardinality aggregation, matching the sample. Displayed recommendations can be an explicitly selected subset of those results.
 
 ## API
 
@@ -114,15 +117,30 @@ Try “Show beige sofas under 5,000 AED, cheapest first,” then “Only leather
 `main.py` streams OpenAI `response.output_text.delta` events while preserving the validated search-tool loop. Only reply text is forwarded; tool arguments and reasoning are not exposed. SSE frames contain JSON with a `type`:
 
 - `status`: a readable progress `message`.
+- `trace`: the turn's `trace_id`, also included in the final response.
 - `reset`: clear any text from a prior model/tool round.
 - `delta`: append `text` to the current reply.
-- `search`: display the latest catalog results, or a `search_error` if unavailable.
-- `done`: authoritative final `data` containing `reply`, `search`, and `search_error`.
+- `presentation`: render the model-selected cards/comparison, or clear the current turn visual for text-only presentation. Retrieval calls emit no presentation event.
+- `preferences`: report an explicit preference update; the final state is authoritative for the next user turn.
+- `done`: authoritative final `data` containing `reply`, `presentation`, `search_state`, and four `follow_ups`. Retrieval errors are returned to the model for recovery, rather than replacing an accepted presentation.
 - `error`: terminal failure with a readable `message`; no successful completion follows.
 
 `static/stream.js` handles UTF-8 characters and event boundaries split across network chunks. The browser commits conversation history and active filters only on `done`. Interrupted replies are removed and the input is restored for retry. Upstream streams close when processing ends or the request is cancelled. Configuration and request-validation failures return normal HTTP errors before streaming starts; later failures use SSE error events.
 
-Streaming improves visible responsiveness; the model still needs to interpret the request and complete the search before generating a grounded product answer. The response disables caching and requests that compatible proxies disable buffering via `X-Accel-Buffering: no`.
+Streaming improves visible responsiveness; the model still needs to interpret the request and complete the search before generating a grounded product answer. There is no browser-wide total timeout for chat turns; individual catalog/model calls retain their own timeouts. The response disables caching and requests that compatible proxies disable buffering via `X-Accel-Buffering: no`.
+
+## Agent logs
+
+Agent traces are written automatically to `logs/agent.jsonl` (one JSON object per line). Each turn has a unique `trace_id`; records include IST timestamps (`Asia/Kolkata`, `+05:30`), ordered step numbers, model rounds, token usage when available, tool arguments/results and durations, Elasticsearch request bodies/responses, presentation/preference events, and final replies or failures/cancellations. Streaming chunks log character counts; the complete text is stored with the completed model/final response.
+
+The same events are also written to `logs/agent.log` as compact, single-line step summaries with timestamps, trace IDs, timings, product counts, and a short preview of the user message and final reply. Each completed model round also includes compact `LLM output:` lines showing every generated tool call with its arguments, or the complete final response with follow-up suggestions. These outputs are not truncated. Full prompts, catalog payloads, streaming chunks, and UI bookkeeping are omitted from the readable log; full details remain in JSONL. For a custom `AGENT_LOG_PATH`, the companion uses the same filename with a `.log` suffix (or `.readable.log` appended if the configured path already ends in `.log`). When the companion is first created, existing events in the current JSONL file are converted automatically; existing rotated backups are not converted. Both formats rotate independently using the same limits.
+
+Credentials are redacted, authorization headers are not logged, and hidden/encrypted reasoning is omitted. Log files use owner-only permissions and `logs/` is excluded from Git. Customer messages and catalog records are retained in these local traces. The default rotation is 10 MiB per file with five backups. Configure `AGENT_LOG_PATH`, `AGENT_LOG_MAX_BYTES` and `AGENT_LOG_BACKUP_COUNT` in `.env`; relative paths resolve from the project directory.
+
+```bash
+tail -f logs/agent.log
+rg 'YOUR_TRACE_ID' logs/agent.jsonl
+```
 
 ## Checks
 
@@ -131,7 +149,7 @@ pip install -r requirements-dev.txt
 python -m unittest discover -s tests -v
 node tests/stream.test.js
 node tests/colors.test.js
-node tests/filters.test.js
+node tests/follow-ups.test.js
 ```
 
 Tests mock OpenAI; a live model call requires a configured API key.

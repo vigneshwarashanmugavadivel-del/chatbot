@@ -91,10 +91,12 @@ class SimilarTests(unittest.IsolatedAsyncioTestCase):
             step += 1
             return httpx.Response(200,json={'responses':[{'hits':{'total':1,'hits':[hit() if step == 1 else hit('OTHER','DIFFERENT')]}}]})
         self.transport(handler)
+        questions = ['How do these compare?', 'What goes with these?', 'Can I see other colours?', 'Which is easiest to clean?']
         with patch.object(app.state,'searcher',self.searcher,create=True):
             async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app),base_url='http://test') as client:
                 response=await client.post('/api/products/similar',json={'product_id':'SEED'})
                 self.assertEqual(response.status_code,200)
                 self.assertEqual(response.json()['products'][0]['id'],'OTHER')
+                self.assertEqual(response.json()['follow_ups'], [])
                 for payload in [{'product_id':''},{'product_id':'SEED','limit':100},{'product_id':'SEED','category':'fake'}]:
                     self.assertEqual((await client.post('/api/products/similar',json=payload)).status_code,422)

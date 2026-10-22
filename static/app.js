@@ -37,18 +37,18 @@ function safeLink(value) {
   } catch { return null; }
 }
 
-function renderFilterSuggestions(search, reply) {
-  document.querySelectorAll('.filter-suggestions').forEach((element) => element.remove());
-  const choices = buildFilterSuggestions(search, reply);
+function renderFollowUps(questions) {
+  document.querySelectorAll('.follow-up-suggestions').forEach((element) => element.remove());
+  const choices = buildFollowUpSuggestions(questions);
   if (!choices.length) return;
   const group = document.createElement('div');
-  group.className = 'filter-suggestions';
+  group.className = 'follow-up-suggestions';
   group.setAttribute('role', 'group');
-  group.setAttribute('aria-label', 'Suggested filters');
+  group.setAttribute('aria-label', 'Suggested follow-up questions');
   for (const choice of choices) {
     const button = document.createElement('button');
     button.type = 'button';
-    button.className = 'filter-link';
+    button.className = 'follow-up-link';
     button.textContent = choice.label;
     button.disabled = busy;
     button.addEventListener('click', () => {
@@ -62,41 +62,63 @@ function renderFilterSuggestions(search, reply) {
   messages.scrollTop = messages.scrollHeight;
 }
 
-function renderProducts(search, before = null) {
+function renderPresentation(presentation, before = null) {
+  if (!presentation || presentation.kind === 'text') return null;
   const block = document.createElement('section');
   block.className = 'search-results';
-  block.setAttribute('aria-label', 'Product search results');
-  const summary = document.createElement('p');
-  summary.className = 'search-summary';
-  const queryLabel = search.query || search.request?.filters?.categories?.join(', ') || 'Products';
-  summary.textContent = search.products.length
-    ? `${search.similar_to ? `Similar to ${search.similar_to.title}` : `Search: ${queryLabel}`} · About ${search.total} matches · Page ${search.page}`
-    : search.similar_to ? 'No similar products match your current filters.' : `No products found for “${queryLabel}”.`;
-  block.append(summary);
-  const active = document.createElement('p');
-  active.className = 'search-summary';
-  const labels = {
-    categories: 'Category', colors: 'Color', materials: 'Material', sizes: 'Size',
-    brands: 'Brand', product_types: 'Product type', product_ids: 'SKU', group_ids: 'Group',
-    min_price: 'Minimum price', max_price: 'Maximum price', currency: 'Currency',
-    min_length_cm: 'Minimum length (cm)', max_length_cm: 'Maximum length (cm)',
-    min_width_cm: 'Minimum width (cm)', max_width_cm: 'Maximum width (cm)',
-    min_height_cm: 'Minimum height (cm)', max_height_cm: 'Maximum height (cm)',
-  };
-  const applied = [];
-  for (const [key, value] of Object.entries(search.applied_filters || {})) {
-    if (key === 'on_sale') applied.push(value ? 'On sale' : 'No discount');
-    else if (labels[key]) applied.push(`${labels[key]}: ${Array.isArray(value) ? value.join(', ') : value}`);
+  block.setAttribute('aria-label', presentation.kind === 'comparison' ? 'Product comparison' : 'Recommended products');
+  if (presentation.title) {
+    const heading = document.createElement('h3');
+    heading.className = 'presentation-title';
+    heading.textContent = presentation.title;
+    block.append(heading);
   }
-  if (search.region) applied.push(`Storefront: ${search.region}`);
-  const sortLabels = { price_asc: 'Price: low to high', price_desc: 'Price: high to low', title_asc: 'Name: A–Z' };
-  if (sortLabels[search.sort]) applied.push(sortLabels[search.sort]);
-  active.textContent = applied.join(' · ');
-  block.append(active);
-  const grid = document.createElement('div');
-  grid.className = 'product-grid';
-  for (const product of search.products) grid.append(createProductCard(product, search));
-  block.append(grid);
+  if (presentation.kind === 'comparison') {
+    const wrapper = document.createElement('div');
+    wrapper.className = 'comparison-scroll';
+    const table = document.createElement('table');
+    table.className = 'product-comparison';
+    const header = document.createElement('tr');
+    const corner = document.createElement('th');
+    corner.textContent = 'Details';
+    header.append(corner);
+    for (const item of presentation.items) {
+      const name = document.createElement('th');
+      name.setAttribute('scope', 'col');
+      name.textContent = item.product.title;
+      header.append(name);
+    }
+    const head = document.createElement('thead');
+    head.append(header);
+    table.append(head);
+    const body = document.createElement('tbody');
+    const labels = { description: 'Description', category: 'Category', material: 'Material and finish',
+      color: 'Colour', dimension: 'Dimensions', size: 'Size', brand: 'Brand', display_price: 'Price' };
+    for (const field of presentation.fields) {
+      const row = document.createElement('tr');
+      const label = document.createElement('th');
+      label.setAttribute('scope', 'row');
+      label.textContent = labels[field] || field;
+      row.append(label);
+      for (const item of presentation.items) {
+        const value = document.createElement('td');
+        value.textContent = item.product[field] || 'Not listed';
+        row.append(value);
+      }
+      body.append(row);
+    }
+    table.append(body);
+    wrapper.append(table);
+    block.append(wrapper);
+  } else {
+    const grid = document.createElement('div');
+    grid.className = 'product-grid';
+    const products = presentation.items.map(item => item.product);
+    for (const item of presentation.items) {
+      grid.append(createProductCard(item.product, { products, request: item.request }));
+    }
+    block.append(grid);
+  }
   if (before) messages.insertBefore(block, before);
   else messages.append(block);
   messages.scrollTop = messages.scrollHeight;
@@ -108,7 +130,7 @@ function setBusy(value) {
   send.disabled = reset.disabled = input.disabled = value;
   document.querySelectorAll('.colour-option').forEach((button) => { button.disabled = value; });
   document.querySelectorAll('.show-similar').forEach((button) => { button.disabled = value; });
-  document.querySelectorAll('.filter-link').forEach((button) => { button.disabled = value; });
+  document.querySelectorAll('.follow-up-link').forEach((button) => { button.disabled = value; });
 }
 
 function createProductCard(product, search) {
@@ -247,49 +269,10 @@ function createProductCard(product, search) {
   return card;
 }
 
-async function showSimilarProducts(product, search) {
+async function showSimilarProducts(product) {
   if (busy) return;
-  setBusy(true);
-  suggestions.hidden = true;
-  const question = `Show products similar to ${product.title} (SKU ${product.id}).`;
-  const bubble = addMessage('user', question);
-  status.textContent = `Finding products similar to ${product.title}…`;
-  try {
-    const state = { ...(search.request || {}), filters: { ...(search.request?.filters || {}) } };
-    if (product.variant_selected && product.color && state.filters.colors?.length) state.filters.colors = [product.color];
-    const response = await fetch('/api/products/similar', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ product_id: product.id, search_state: state, limit: 8 }),
-      signal: AbortSignal.timeout(90000),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not load similar products. Please try again.');
-    const filters = data.request?.filters || {};
-    let followUp = '';
-    if (filters.min_price == null && filters.max_price == null) followUp = 'What budget would you like to stay within?';
-    else if (!filters.colors?.length && data.products.some((item) => item.color)) followUp = 'Do you have a preferred colour?';
-    else if (!filters.materials?.length && data.products.some((item) => item.material)) followUp = 'Do you have a preferred material or finish?';
-    const reply = data.products.length
-      ? `Here are some alternatives to ${product.title}, keeping your search requirements.${followUp ? '\n\n' + followUp : ''}`
-      : `I couldn’t find alternatives to ${product.title} with the current filters. Would you like to broaden one of your requirements?`;
-    renderProducts(data);
-    addMessage('assistant', reply);
-    activeSearch = data.request;
-    history.push(
-      { role: 'user', content: question.slice(0, 4000) },
-      { role: 'assistant', content: (reply + '\nDisplayed products in order: ' + data.products.map((item) => `${item.title} (${item.color || 'colour unknown'}, SKU ${item.id})`).join('; ')).slice(0, 4000) },
-    );
-    history = history.slice(-20);
-    renderFilterSuggestions(data, reply);
-    status.textContent = '';
-  } catch (error) {
-    bubble.remove();
-    status.textContent = error.name === 'TimeoutError' ? 'Finding similar products timed out. Please try again.' : error.message;
-  } finally {
-    setBusy(false);
-    input.focus();
-  }
+  input.value = `Show products similar to ${product.title} (SKU ${product.id}).`;
+  return submitMessage();
 }
 
 async function selectProductColor(card, product, option, search, feedback) {
@@ -348,7 +331,6 @@ async function submitMessage() {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ messages: [...history.slice(-20), { role: 'user', content }], search_state: activeSearch }),
-      signal: AbortSignal.timeout(180000),
     });
     if (!response.ok) {
       const error = await response.json();
@@ -360,25 +342,22 @@ async function submitMessage() {
       else if (event.type === 'delta') {
         status.textContent = 'Writing…';
         updateReply((assistantBubble?.textContent || '') + event.text);
-      } else if (event.type === 'search') {
+      } else if (event.type === 'presentation') {
         productBlock?.remove();
-        productBlock = event.search ? renderProducts(event.search, assistantBubble) : null;
-        if (event.search_error) status.textContent = event.search_error;
+        productBlock = renderPresentation(event.presentation, assistantBubble);
       }
     });
-    const productContext = data.search?.products.length
-      ? '\nDisplayed catalog products in order: ' + data.search.products.map((p) => `${p.title} (SKU ${p.id})`).join('; ')
-        + `. Search query: ${data.search.query}; page: ${data.search.page}; limit: ${data.search.limit}.`
+    const items = data.presentation?.items || [];
+    const productContext = items.length
+      ? '\nDisplayed catalog products in order: ' + items.map(item => `${item.product.title} (SKU ${item.product.id}, storefront ${item.request?.region || 'default'})`).join('; ')
       : '';
     history.push({ role: 'user', content }, { role: 'assistant', content: data.reply.slice(0, 3000) + productContext.slice(0, 1000) });
     history = history.slice(-20);
     updateReply(data.reply);
-    if (data.search) {
-      activeSearch = data.search.request;
-      if (!productBlock) productBlock = renderProducts(data.search, assistantBubble);
-    }
-    renderFilterSuggestions(data.search_error ? null : data.search, data.reply);
-    status.textContent = data.search_error || '';
+    if (data.presentation && !productBlock) productBlock = renderPresentation(data.presentation, assistantBubble);
+    if ('search_state' in data) activeSearch = data.search_state;
+    renderFollowUps(data.follow_ups);
+    status.textContent = '';
   } catch (error) {
     bubble.remove();
     assistantBubble?.remove();

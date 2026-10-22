@@ -1,3 +1,4 @@
+from model_fixtures import answer
 import json
 import unittest
 from types import SimpleNamespace
@@ -95,14 +96,17 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.env.stop()
 
     def setup_tool(self, arguments=None, error=None):
-        result = SearchResult(query='sofa', products=[Product(id='S1', title='Cloud', price='900 AED')], total=1, page=1, pages=1)
+        result = SearchResult(query='sofa', products=[Product(id='S1', title='Cloud', price='900 AED', stock=2)], total=1, page=1, pages=1)
         self.search = AsyncMock(return_value=result, side_effect=error)
         app.state.searcher = SimpleNamespace(search=self.search, close=AsyncMock(), configured=True)
         call = SimpleNamespace(type='function_call', name='search_products', call_id='call_1',
                                arguments=arguments or '{"query":"sofa","page":1,"limit":6}')
+        display = SimpleNamespace(type='function_call', name='display_products', call_id='display',
+            arguments=json.dumps({'presentation':'recommendations', 'products':[{'retrieval_id':'retrieval_1','product_id':'S1'}]}))
         self.create = AsyncMock(side_effect=[
             SimpleNamespace(status='completed', output=[call], output_text=''),
-            SimpleNamespace(status='completed', output=[], output_text='Here are your results.'),
+            SimpleNamespace(status='completed', output=[display], output_text=''),
+            SimpleNamespace(status='completed', output=[], output_text=answer('Search is unavailable.' if error else 'Here are your results.')),
         ])
         app.state.openai = SimpleNamespace(responses=SimpleNamespace(create=self.create), close=AsyncMock())
 
@@ -110,7 +114,7 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.setup_tool()
         response = await self.client.post('/api/chat', json={'messages': [{'role': 'user', 'content': 'Show sofas'}]})
         self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()['search']['products'][0]['id'], 'S1')
+        self.assertEqual(response.json()['presentation']['items'][0]['product']['id'], 'S1')
         output = self.create.call_args_list[1].kwargs['input'][-1]
         self.assertEqual(output['type'], 'function_call_output')
         self.assertEqual(output['call_id'], 'call_1')
@@ -127,8 +131,8 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.setup_tool(error=SearchUnavailable('Product search is temporarily unavailable.'))
         response = await self.client.post('/api/chat', json={'messages': [{'role': 'user', 'content': 'Show sofas'}]})
         self.assertEqual(response.status_code, 200)
-        self.assertIsNone(response.json()['search'])
-        self.assertIn('unavailable', response.json()['search_error'])
+        self.assertIsNone(response.json()['presentation'])
+        self.assertIn('unavailable', response.json()['reply'])
 
     async def test_active_filters_are_available_to_the_model_on_followup(self):
         self.setup_tool()
@@ -149,15 +153,13 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
                         {'query': 'sofa', 'index': 'other'}]:
             self.assertEqual((await self.client.post('/api/search', json=payload)).status_code, 422)
 
-    async def test_category_change_clears_old_filters_before_search(self):
-        self.setup_tool('{"query":"","intent":"new_search","explicit_filters":["categories"],"filters":{"categories":["tables"],"colors":["Slate grey"],"materials":["Leather"],"max_price":4000}}')
+    async def test_investigation_does_not_implicitly_change_customer_preferences(self):
+        self.setup_tool('{"query":"tables"}')
         response = await self.client.post('/api/chat',json={
             'messages':[{'role':'user','content':'show me tables'}],
-            'search_state':{'filters':{'categories':['sofas'],'colors':['Slate grey'],'materials':['Leather'],'max_price':4000}},
+            'search_state':{'query':'sofa','filters':{'colors':['Slate grey'],'max_price':4000}},
         })
         self.assertEqual(response.status_code,200)
-        actual = self.search.call_args.args[0]
-        self.assertEqual(actual.filters.categories,['tables'])
-        self.assertEqual(actual.filters.colors,[])
-        self.assertEqual(actual.filters.materials,[])
-        self.assertIsNone(actual.filters.max_price)
+        self.assertEqual(self.search.call_args.args[0].query, 'tables')
+        self.assertIsNone(self.search.call_args.args[0].filters.max_price)
+        self.assertEqual(response.json()['search_state']['filters']['max_price'],4000)

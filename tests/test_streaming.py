@@ -1,3 +1,4 @@
+from model_fixtures import answer
 import json
 import unittest
 from types import SimpleNamespace
@@ -28,11 +29,13 @@ class FakeStream:
 
 
 def text_stream(text='Hello there'):
+    raw = answer(text)
+    split = len('{"reply": "') + len(json.dumps(text[:5])[1:-1])
     return FakeStream([
-        SimpleNamespace(type='response.output_text.delta', delta=text[:5]),
-        SimpleNamespace(type='response.output_text.delta', delta=text[5:]),
+        SimpleNamespace(type='response.output_text.delta', delta=raw[:split]),
+        SimpleNamespace(type='response.output_text.delta', delta=raw[split:]),
         SimpleNamespace(type='response.completed', response=SimpleNamespace(
-            status='completed', output=[], output_text=text)),
+            status='completed', output=[], output_text=raw)),
     ])
 
 
@@ -70,6 +73,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(''.join(e['text'] for e in events if e['type'] == 'delta'), 'Hello there')
         self.assertEqual(events[-1]['type'], 'done')
         self.assertEqual(events[-1]['data']['reply'], 'Hello there')
+        self.assertEqual(len(events[-1]['data']['follow_ups']), 4)
         self.assertTrue(create.call_args.kwargs['stream'])
         self.assertTrue(stream.closed)
 
@@ -78,14 +82,18 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
                                arguments='{"query":"sofa","filters":{"max_price":5000}}')
         first = FakeStream([SimpleNamespace(type='response.completed', response=SimpleNamespace(
             status='completed', output=[call], output_text=''))])
-        create = self.configure([first, text_stream('Try Cloud')])
+        display = SimpleNamespace(type='function_call', name='display_products', call_id='display1',
+            arguments=json.dumps({'presentation':'recommendations','products':[{'retrieval_id':'retrieval_1','product_id':'S1'}]}))
+        displayed = FakeStream([SimpleNamespace(type='response.completed', response=SimpleNamespace(
+            status='completed', output=[display], output_text=''))])
+        create = self.configure([first, displayed, text_stream('Try Cloud')])
         result = SearchResult(query='sofa', products=[Product(id='S1', title='Cloud', stock=2)],
                               total=1, page=1, pages=1)
         app.state.searcher = SimpleNamespace(search=AsyncMock(return_value=result), close=AsyncMock())
         events = await self.events()
         types = [e['type'] for e in events]
-        self.assertLess(types.index('search'), types.index('delta'))
-        self.assertEqual(events[-1]['data']['search']['products'][0]['stock'], 2)
+        self.assertLess(types.index('presentation'), types.index('delta'))
+        self.assertEqual(events[-1]['data']['presentation']['items'][0]['product']['stock'], 2)
         self.assertEqual(create.call_args_list[1].kwargs['input'][-1]['call_id'], 'call1')
 
     async def test_search_failure_remains_visible(self):
@@ -94,9 +102,9 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
             status='completed', output=[call], output_text=''))]), text_stream('Search is unavailable.')])
         app.state.searcher = SimpleNamespace(search=AsyncMock(side_effect=SearchUnavailable('Search unavailable.')), close=AsyncMock())
         events = await self.events()
-        search = next(e for e in events if e['type'] == 'search')
-        self.assertIsNone(search['search'])
-        self.assertEqual(events[-1]['data']['search_error'], 'Search unavailable.')
+        self.assertFalse(any(event['type'] == 'presentation' for event in events))
+        self.assertIsNone(events[-1]['data']['presentation'])
+        self.assertEqual(events[-1]['data']['reply'], 'Search is unavailable.')
 
     async def test_truncated_and_failed_upstream_streams_are_not_completed(self):
         for terminal in [None, 'response.incomplete', 'response.failed', 'error']:
@@ -121,6 +129,7 @@ class StreamingTests(unittest.IsolatedAsyncioTestCase):
         self.configure([stream])
         generator = chat_events(ChatRequest(messages=[{'role': 'user', 'content': 'Hello'}]),
                                 app.state.openai, app.state.searcher, streaming=True)
+        self.assertEqual((await anext(generator))['type'], 'trace')
         self.assertEqual((await anext(generator))['type'], 'reset')
         self.assertEqual((await anext(generator))['type'], 'status')
         event = await anext(generator)

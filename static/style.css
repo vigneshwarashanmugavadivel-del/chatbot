@@ -56,11 +56,17 @@ footer { padding: 12px 24px 18px; font-size: 10px; text-align: center; color: #7
 .product-sku { font-size: 10px; color: #8a8e81; margin: 0; }
 .show-similar { width: 100%; padding: 8px 10px; margin-top: 12px; border: 1px solid #d8dcd2; border-radius: 3px; background: #f6f7f2; color: #3c4937; font-size: 12px; font-weight: 500; }
 .show-similar:hover { background: #eaf0e3; border-color: #70816a; }
-.filter-suggestions { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: -6px 0 22px; padding: 0 3px; }
-.filter-link { background: transparent; border: 0; border-radius: 3px; padding: 6px 2px; color: #496642; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; text-align: left; }
-.filter-link:hover { color: #253c20; background: #eef1e8; }
+.follow-up-suggestions { display: flex; flex-wrap: wrap; gap: 8px 14px; margin: -6px 0 22px; padding: 0 3px; }
+.follow-up-link { background: transparent; border: 0; border-radius: 3px; padding: 6px 2px; color: #496642; font-size: 12px; text-decoration: underline; text-underline-offset: 3px; text-align: left; }
+.follow-up-link:hover { color: #253c20; background: #eef1e8; }
 @media (max-width: 1100px) { .product-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
 @media (max-width: 900px) { .product-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 650px) { .product-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 @media (max-width: 480px) { .product-grid { grid-template-columns: minmax(0, 1fr); gap: 12px; } .product-media { aspect-ratio: 16 / 9; } }
 @media (max-width: 600px) { body { padding: 0; } .chat-shell { height: 100dvh; min-height: 0; border: 0; border-radius: 0; } header { padding: 20px; } #messages { padding: 20px 16px 8px; } .message { max-width: 92%; } .suggestions { padding: 8px 16px; } #chat-form { margin: 0 12px; } }
+.presentation-title { margin: 0 0 12px; font-size: 16px; font-weight: 600; }
+.comparison-scroll { overflow-x: auto; border: 1px solid #dedfd6; border-radius: 4px; }
+.product-comparison { width: 100%; border-collapse: collapse; font-size: 13px; line-height: 1.6; }
+.product-comparison th, .product-comparison td { padding: 12px; border-bottom: 1px solid #e9e5dc; min-width: 160px; text-align: left; vertical-align: top; white-space: pre-line; }
+.product-comparison thead { background: #eeefe8; }
+.product-comparison tbody th { min-width: 130px; font-weight: 600; }

@@ -19,7 +19,7 @@ class SearchFilters(BaseModel):
     sizes: FilterValues = Field(default_factory=list, description='Catalog size labels, e.g. small or large; not seat count.')
     product_types: FilterValues = Field(default_factory=list, description='Internal catalog types, e.g. simple, configurable, bundle; not categories.')
     brands: FilterValues = Field(default_factory=list)
-    product_ids: FilterValues = Field(default_factory=list, description='Exact Elasticsearch SKU identifiers explicitly supplied by the customer. Preserve the full code including hyphens and punctuation; never invent an SKU. Use an empty query for SKU-only lookups.')
+    product_ids: FilterValues = Field(default_factory=list, description='Exact Elasticsearch SKU identifiers supplied by the customer or observed in retrieved catalog records. Preserve the full code including hyphens and punctuation; never invent an SKU. Use an empty query for SKU-only lookups.')
     group_ids: FilterValues = Field(default_factory=list)
     min_price: Amount | None = None
     max_price: Amount | None = None
