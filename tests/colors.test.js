@@ -61,6 +61,19 @@ function setup(fail = false, filters = { colors: ['beige'], max_price: 5000 }) {
   return { context, nodes, block, requests, search, state };
 }
 
+test('card specifications separate joined labels and words without catalog-specific headings', () => {
+  const { context } = setup();
+  const card = context.createProductCard({ id:'A', title:'Table', brand:'Al Huzaifa',
+    dimension:'Height: 65 cmSmall: Diameter:40 cmSeat Height:45 cm',
+    material:'Frame: Wood, acrylicTop: Sintered stoneSideboard',
+  }, { products:[], request:{} });
+  const specs = descendants(card).filter(node => node.tag === 'dd').map(node => node.textContent);
+  assert(specs.includes('Height: 65 cm\nSmall: Diameter: 40 cm\nSeat Height: 45 cm'));
+  assert(specs.includes('Frame: Wood, acrylic\nTop: Sintered stone Sideboard'));
+  assert(specs.includes('Al Huzaifa'));
+  assert(descendants(card).some(node => node.tag === 'dt' && node.textContent === 'Dimensions:'));
+});
+
 test('selecting a colour replaces image, price, specifications and SKU on the same card', async () => {
   const { context, nodes, block, requests, search, state } = setup();
   const button = block.querySelectorAll('.colour-option').find(node => node.textContent === 'Grey');

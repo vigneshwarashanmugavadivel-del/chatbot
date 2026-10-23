@@ -102,7 +102,9 @@ function renderPresentation(presentation, before = null) {
       row.append(label);
       for (const item of presentation.items) {
         const value = document.createElement('td');
-        value.textContent = item.product[field] || 'Not listed';
+        const original = item.product[field];
+        value.textContent = original && ['material', 'dimension', 'size'].includes(field)
+          ? formatSpecifications(original) : original || 'Not listed';
         row.append(value);
       }
       body.append(row);
@@ -131,6 +133,16 @@ function setBusy(value) {
   document.querySelectorAll('.colour-option').forEach((button) => { button.disabled = value; });
   document.querySelectorAll('.show-similar').forEach((button) => { button.disabled = value; });
   document.querySelectorAll('.follow-up-link').forEach((button) => { button.disabled = value; });
+}
+
+function formatSpecifications(value) {
+  return String(value)
+    // Recognize label boundaries, including multiword labels, without a list
+    // of catalog-specific headings (e.g. "cmSmall:" or "acrylicTop:").
+    .replace(/([^\s])(?=[A-Z][A-Za-z]*(?:[ \t]+[A-Za-z]+){0,3}[ \t]*:)/g, '$1\n')
+    .replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+    .replace(/:[ \t]*/g, ': ')
+    .trim();
 }
 
 function createProductCard(product, search) {
@@ -186,12 +198,10 @@ function createProductCard(product, search) {
     if (!value) continue;
     const row = document.createElement('div');
     const name = document.createElement('dt');
-    name.textContent = label;
+    name.textContent = `${label}:`;
     const detail = document.createElement('dd');
-    // Catalog labels often run together: "cmWidth" or "steelBody".
-    detail.textContent = String(value)
-      .replace(/([^\s])(?=(?:Seat\s+)?(?:Length|Width|Height|Depth|Diameter|Frame|Body)\s*:)/gi, '$1\n')
-      .replace(/:\s*/g, ': ');
+    detail.textContent = ['Material and finish', 'Dimensions', 'Size'].includes(label)
+      ? formatSpecifications(value) : String(value);
     row.append(name, detail);
     specs.append(row);
   }
