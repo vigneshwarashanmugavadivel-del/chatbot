@@ -66,6 +66,7 @@ def action_tool(name, description, schema):
 
 DISPLAY_TOOL = action_tool('display_products',
     'Choose what the customer sees this turn: ordered recommendation cards, a comparison, or text only. '
+    'Select at most 8 products to display; retrieval tools can return more candidates for you to evaluate. '
     'Select exact retrieval_id/product_id pairs returned by retrieval tools during this turn. '
     'The backend renders original catalog data; unknown products are rejected. Comparison fields use original values, with missing facts labelled as not listed. '
     'Each successful call replaces the current turn presentation without changing preferences. It returns confirmation so you can align the final answer. '
@@ -77,7 +78,14 @@ SIMILAR_TOOL = action_tool('find_similar_products',
     'Retrieve catalog alternatives to an exact product identifier, using the supplied complete search state and limit. '
     'Returns a retrieval_id and product records without displaying them or changing preferences. '
     'The source product and its family are excluded; similarity uses catalog text and preserves supplied non-identity constraints.', SimilarRequest)
-AGENT_TOOLS = [SEARCH_TOOL, PRODUCT_DETAILS_TOOL, SIMILAR_TOOL, DISPLAY_TOOL, PREFERENCES_TOOL]
+FILTER_OPTIONS_TOOL = action_tool('get_available_filters',
+    'Discover filter values present across all available catalog variants matching the supplied complete query, filters and region. '
+    'Returns category, colour, material, size, brand and product-type options with variant counts, '
+    'price statistics grouped by currency, dimension statistics in cm and sale-status counts. Query and existing filters remain enforced. '
+    'Pagination does not affect these aggregations. Each categorical list contains up to 50 values; other_variant_count indicates omitted values. '
+    'Counts refer to variants, not collapsed product families. Results are evidence only: they do not display products or change preferences. '
+    'Passing multiple constraints checks their combined matches. This tool returns aggregate evidence, not product records or displayable retrieval references.', ProductSearchRequest)
+AGENT_TOOLS = [SEARCH_TOOL, PRODUCT_DETAILS_TOOL, SIMILAR_TOOL, FILTER_OPTIONS_TOOL, DISPLAY_TOOL, PREFERENCES_TOOL]
 
 
 class AgentSession:
@@ -93,6 +101,9 @@ class AgentSession:
         return {'retrieval_id': identifier, **snapshot.model_dump()}
 
     async def execute(self, name, arguments, searcher):
+        if name == 'get_available_filters':
+            params = ProductSearchRequest.model_validate_json(arguments)
+            return await searcher.available_filters(params), []
         if name in ('search_products', 'get_product_details'):
             params = ProductSearchRequest.model_validate_json(arguments)
             result = await searcher.search(params)

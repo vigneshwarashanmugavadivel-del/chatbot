@@ -19,6 +19,8 @@ from example.text_search import SearchConfig, assemble_response
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_RETRIEVAL_LIMIT = 16
+
 
 class SearchUnavailable(Exception):
     """A sanitized, customer-readable search error."""
@@ -26,12 +28,12 @@ class SearchUnavailable(Exception):
 
 class ProductSearchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
-    query: str = Field(default="", max_length=300, description="Product names and descriptive keywords searched across title, short description, description and other catalog text fields. Do not put these terms only in categories. Empty string is for filter-only browsing.")
+    query: str = Field(default="", max_length=300, description="Search across all searchable Elasticsearch catalog attributes, including SKU/group identifiers, names, descriptions, brand, material, colour, size, dimensions and prices. Put product identifiers directly in query; there is no separate identifier filter. Empty string is for filter-only browsing.")
     filters: SearchFilters = Field(default_factory=SearchFilters)
     region: Region | None = Field(default=None, description="Country storefront; null uses configured default. AE, SA, QA, OM or BH.")
     sort: Literal["relevance", "price_asc", "price_desc", "title_asc"] = "relevance"
     page: int = Field(default=1, ge=1, le=20)
-    limit: int = Field(default=8, ge=1, le=8, description='Maximum number of records for this retrieval; defaults to 8.')
+    limit: int = Field(default=DEFAULT_RETRIEVAL_LIMIT, ge=1, description='Number of records to retrieve for evaluation. Choose independently of the display count; only display_products limits visible items.')
 
 
 class ColorOption(BaseModel):
@@ -50,7 +52,7 @@ class SimilarRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
     product_id: str = Field(min_length=1, max_length=200)
     search_state: ProductSearchRequest = Field(default_factory=ProductSearchRequest)
-    limit: int = Field(default=8, ge=1, le=8)
+    limit: int = Field(default=DEFAULT_RETRIEVAL_LIMIT, ge=1, description='Number of alternatives to retrieve for evaluation, independent of the display count.')
 
 
 class SimilarReference(BaseModel):
@@ -94,7 +96,7 @@ class SearchResult(BaseModel):
     total: int
     page: int
     pages: int
-    limit: int = 8
+    limit: int = DEFAULT_RETRIEVAL_LIMIT
     similar_to: SimilarReference | None = None
     follow_ups: list[str] = Field(default_factory=list)
     corrected_query: str | None = None
@@ -209,24 +211,30 @@ class ProductSearcher:
                         name = fields[key] + name[len(original):]
                         break
             search_fields.append(name + (separator + boost if separator else ''))
-        # Identifiers have their own exact filters and never enter fuzzy text search.
-        identifier_fields = {fields[key] + suffix for key in ('id', 'group_id')
-                             for suffix in ('', '.text', '.keyword')}
-        search_fields = [field for field in search_fields
-                         if field.partition('^')[0] not in identifier_fields]
-        if params.query and not search_fields:
-            raise SearchUnavailable("No searchable text fields are configured.")
+        # Always include every eligible mapped field, including identifiers and
+        # attributes added to the index later. Configured fields add relevance boosts.
+        search_fields = list(dict.fromkeys(['*', *search_fields]))
         request = {"search_query": params.query, "page_num": params.page, "num_results": params.limit}
         filters = params.filters
         runtime = runtime_fields(self.fields, filters, selected_region, currency, params.sort)
-        text_clause = {"multi_match": {
-            "query": params.query, "fields": search_fields,
-            "type": "best_fields", "operator": "and", "fuzziness": "AUTO",
-            "prefix_length": 1, "max_expansions": 50,
-        }} if params.query else {"match_all": {}}
+        # Require every query word, but allow each word to match a different
+        # attribute (e.g. "ivory" in colour and "sofas" in description).
+        # Field analyzers still handle punctuation and language within each word.
+        term_queries = []
+        for term in dict.fromkeys(params.query.split()):
+            match = {"query": term, "fields": search_fields,
+                     "type": "best_fields", "operator": "and", "lenient": True}
+            # Numeric/date/boolean fields cannot run fuzzy queries. The ordinary
+            # alternative covers those fields; fuzzy matching tolerates typos.
+            # dis_max avoids adding the same word's match score twice.
+            term_queries.append({"dis_max": {"queries": [
+                {"multi_match": match},
+                {"multi_match": {**match, "fuzziness": "AUTO", "prefix_length": 1,
+                                 "max_expansions": 50, "boost": 0.8}},
+            ]}})
         body = {
             "query": {"bool": {
-                "must": [text_clause],
+                "must": term_queries or [{"match_all": {}}],
                 "filter": build_filter_clauses(filters, fields, runtime, currency),
             }},
             "_source": list(dict.fromkeys(fields.values())),
@@ -257,6 +265,59 @@ class ProductSearcher:
             raise SearchUnavailable("Product search is not configured on the server.")
         body, request, fields, applied, currency = self.search_body(params)
         return await self.run_product_search(body, request, fields, applied, currency, params)
+
+    async def available_filters(self, params: ProductSearchRequest):
+        """Aggregate options across all matching variants, independent of pagination."""
+        if not self.configured:
+            raise SearchUnavailable("Product search is not configured on the server.")
+        body, _, fields, applied, currency = self.search_body(params)
+        # Compute facet values without adding constraints the customer did not ask for.
+        facet_filters = params.filters.model_copy(update={
+            'min_price': 0, 'on_sale': True,
+            'min_length_cm': 1, 'min_width_cm': 1, 'min_height_cm': 1,
+        })
+        region = f'region_{params.region.lower()}_en' if params.region else os.getenv('ES_REGION_FIELD', '')
+        body['runtime_mappings'] = runtime_fields(self.fields, facet_filters, region, currency, params.sort)
+        body.update({'size': 0, 'from': 0})
+        for key in ('collapse', 'sort', '_source'):
+            body.pop(key, None)
+        attributes = {'categories': 'category', 'colors': 'color', 'materials': 'material',
+                      'sizes': 'size', 'brands': 'brand', 'product_types': 'product_type'}
+        body['aggs'] = {
+            name: {'terms': {'field': fields[field] + '.keyword', 'size': 50,
+                             'exclude': ['', 'not specified', 'null']}}
+            for name, field in attributes.items()
+        }
+        body['aggs']['prices_by_currency'] = {
+            'terms': {'field': 'chat_currency', 'size': 50},
+            'aggs': {'price': {'stats': {'field': 'chat_price'}}},
+        }
+        body['aggs']['on_sale'] = {'terms': {'field': 'chat_on_sale', 'size': 2}}
+        for axis in ('length', 'width', 'height'):
+            body['aggs'][axis + '_cm'] = {'stats': {'field': 'chat_' + axis + '_cm'}}
+        result = (await self.fetch_queries(
+            [body], error_message="Available search filters are temporarily unavailable. Please try again."))[0]
+        aggregations = result.get('aggregations', {})
+        options = {}
+        for name in attributes:
+            aggregation = aggregations.get(name, {})
+            options[name] = {
+                'values': [{'value': bucket['key'], 'matching_variants': bucket['doc_count']}
+                           for bucket in aggregation.get('buckets', [])],
+                'other_variant_count': aggregation.get('sum_other_doc_count', 0),
+            }
+        total = result.get('hits', {}).get('total', 0)
+        return {
+            'request': params.model_dump(), 'applied_filters': applied,
+            'matched_variants': total.get('value', 0) if isinstance(total, dict) else total,
+            'options': options,
+            'prices_by_currency': [
+                {'currency': bucket['key'], **bucket['price']}
+                for bucket in aggregations.get('prices_by_currency', {}).get('buckets', [])],
+            'dimensions_cm': {axis: aggregations.get(axis + '_cm', {}) for axis in ('length', 'width', 'height')},
+            'on_sale': [{'value': bool(bucket['key']), 'matching_variants': bucket['doc_count']}
+                        for bucket in aggregations.get('on_sale', {}).get('buckets', [])],
+        }
 
     async def run_product_search(self, body, request, fields, applied, currency, params):
         content = json.dumps({"index": self.index}) + "\n" + json.dumps(body) + "\n"
@@ -295,7 +356,7 @@ class ProductSearcher:
         lookup.update({'size': 1, 'sort': [{'mad_id': 'desc'}]})
         lookup['query']['bool']['filter'].append({'term': {fields['id'] + '.keyword': selection.product_id.lower()}})
         try:
-            response = await self.fetch_variant_queries([lookup])
+            response = await self.fetch_queries([lookup])
         except SearchUnavailable:
             raise SearchUnavailable("Similar products are temporarily unavailable. Please try again.") from None
         hits = response[0].get('hits', {}).get('hits', [])
@@ -303,7 +364,6 @@ class ProductSearcher:
         if seed is None or not seed.category:
             raise VariantUnavailable("This product cannot be used to find alternatives right now. Please choose another product.")
         filters = selection.search_state.filters.model_copy(update={
-            'product_ids': [], 'group_ids': [],
             'categories': selection.search_state.filters.categories or [seed.category],
         })
         params = selection.search_state.model_copy(update={'query': '', 'filters': filters, 'sort': 'relevance',
@@ -361,7 +421,7 @@ class ProductSearcher:
     @staticmethod
     def variant_params(params):
         # Changing colour explicitly changes SKU; every other structured constraint stays.
-        filters = params.filters.model_copy(update={"colors": [], "product_ids": []})
+        filters = params.filters.model_copy(update={"colors": []})
         return params.model_copy(update={"query": "", "filters": filters, "page": 1})
 
     def family(self, product):
@@ -371,7 +431,7 @@ class ProductSearcher:
             return "group_id", product.group_id
         return "id", product.id
 
-    async def fetch_variant_queries(self, bodies):
+    async def fetch_queries(self, bodies, error_message="Colour options are temporarily unavailable. Please try again."):
         content = "".join(json.dumps({"index": self.index}) + "\n" + json.dumps(body) + "\n" for body in bodies)
         try:
             response = await self.client.post(f"{self.url}/_msearch", content=content,
@@ -379,15 +439,15 @@ class ProductSearcher:
             response.raise_for_status()
             results = response.json().get("responses", [])
             if len(results) != len(bodies):
-                raise ValueError("Incomplete variant response")
+                raise ValueError("Incomplete search response")
             for result in results:
                 if result.get("error") or result.get("timed_out") or result.get("_shards", {}).get("failed", 0):
-                    raise ValueError("Variant search failed")
+                    raise ValueError("Batch search failed")
             return results
         except (httpx.HTTPError, ValueError, KeyError, TypeError) as exc:
-            logger.warning("Variant search failed (%s)", type(exc).__name__)
+            logger.warning("Batch search failed (%s)", type(exc).__name__)
             log_active('elasticsearch.error', error_type=type(exc).__name__, error=str(exc))
-            raise SearchUnavailable("Colour options are temporarily unavailable. Please try again.") from None
+            raise SearchUnavailable(error_message) from None
 
     async def attach_color_options(self, products, params):
         pending = []
@@ -418,7 +478,7 @@ class ProductSearcher:
         if not bodies:
             return
         try:
-            results = await self.fetch_variant_queries(bodies)
+            results = await self.fetch_queries(bodies)
         except SearchUnavailable as exc:
             for product, *_ in pending:
                 product.color_options_error = str(exc)
@@ -461,7 +521,7 @@ class ProductSearcher:
         body['size'] = 1
         body['sort'] = [{'mad_id': 'desc'}]
         body['query']['bool']['filter'].append({'term': {fields['id'] + '.keyword': selection.product_id.lower()}})
-        results = await self.fetch_variant_queries([body])
+        results = await self.fetch_queries([body])
         hits = results[0].get('hits', {}).get('hits', [])
         base = self.normalize_product(hits[0].get('_source', {}), fields, currency) if hits else None
         if base is None:
@@ -475,7 +535,7 @@ class ProductSearcher:
             {'term': {fields[family_key] + '.keyword': family_id.lower()}},
             {'term': {fields['id'] + '.keyword': selection.variant_id.lower()}},
         ])
-        results = await self.fetch_variant_queries([target])
+        results = await self.fetch_queries([target])
         hits = results[0].get('hits', {}).get('hits', [])
         product = self.normalize_product(hits[0].get('_source', {}), fields, currency) if hits else None
         if product is None or self.family(product) != self.family(base):
@@ -507,13 +567,13 @@ def parse_price(raw, default_currency='AED'):
 
 SEARCH_TOOL = {
     'type': 'function', 'name': 'search_products', 'strict': True,
-    'description': 'Read-only catalog search. Returns a retrieval_id and product records to the model without displaying products or changing preferences. Query is full text across configured fields, requiring all query terms within one field, with fuzzy matching. Exact SKU/group identifiers use filters.product_ids/group_ids. Empty query supports filter-only browsing. Filter arrays use OR internally; different filters use AND. Arguments are the complete independent requirements for this retrieval. Region chooses storefront stock/prices/currency. Prices and sorting use effective displayed prices without currency conversion; dimensions use labelled cm measurements. Positive availability is enforced. Pagination and page size apply to this call only.',
+    'description': 'Read-only catalog search. Returns a retrieval_id and product records to the model without displaying products or changing preferences. Query searches all eligible mapped Elasticsearch attributes, including SKU/group identifiers, brand, size, dimensions, prices and descriptions. Every query word must match, but different words can match different attributes (for example, ivory in colour and sofas in description). Ordinary matching supports numeric/date/boolean values; a fuzzy alternative tolerates spelling differences in text. Put identifiers directly in query; there are no separate identifier filters. Empty query supports filter-only browsing. Filter arrays use OR internally; different filters use AND. Arguments are the complete independent requirements for this retrieval. Region chooses storefront stock/prices/currency. Prices and sorting use effective displayed prices without currency conversion; dimensions use labelled cm measurements. Positive availability is enforced. Pagination and page size apply to this call only.',
     'parameters': strict_schema(ProductSearchRequest.model_json_schema()),
 }
 
 
 PRODUCT_DETAILS_TOOL = {
     'type': 'function', 'name': 'get_product_details', 'strict': True,
-    'description': 'Read-only catalog retrieval for factual context. Returns a retrieval_id and product records without displaying anything or changing preferences. Uses the same independent text, identifier, filter and region parameters as catalog search. Multiple identifiers in filters.product_ids are alternatives; multiple words in query must match together. Returned products include specifications and known colour options, and can be selected in a later display action.',
+    'description': 'Read-only catalog retrieval for factual context. Returns a retrieval_id and product records without displaying anything or changing preferences. Uses the same independent query, filter and region parameters as catalog search. Search a product identifier directly in query; all searchable catalog attributes participate. Every query word must match, and words may match different attributes. Returned products include specifications and known colour options, and can be selected in a later display action.',
     'parameters': strict_schema(ProductSearchRequest.model_json_schema()),
 }

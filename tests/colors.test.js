@@ -61,6 +61,17 @@ function setup(fail = false, filters = { colors: ['beige'], max_price: 5000 }) {
   return { context, nodes, block, requests, search, state };
 }
 
+test('chat requests include the selected custom chat instructions', async () => {
+  const { context, nodes, requests } = setup();
+  context.getChatInstructions = () => 'Reply in short Hindi sentences.';
+  nodes['#message'].value = 'Show beige sofas';
+  await context.submitMessage();
+  assert.equal(requests[0].url, '/api/chat/stream');
+  assert.equal(requests[0].body.chat_instructions, 'Reply in short Hindi sentences.');
+  context.newChat();
+  assert.equal(context.getChatInstructions(), 'Reply in short Hindi sentences.');
+});
+
 test('card specifications separate joined labels and words without catalog-specific headings', () => {
   const { context } = setup();
   const card = context.createProductCard({ id:'A', title:'Table', brand:'Al Huzaifa',

@@ -34,7 +34,7 @@ class ChatTests(unittest.IsolatedAsyncioTestCase):
 
         response = await self.client.get('/')
         self.assertEqual(response.headers['cache-control'], 'no-store')
-        for name in ['app.js', 'follow-ups.js', 'stream.js', 'style.css']:
+        for name in ['app.js', 'chat-instructions.js', 'follow-ups.js', 'stream.js', 'style.css']:
             version = hashlib.sha256((BASE_DIR / 'static' / name).read_bytes()).hexdigest()[:12]
             url = f'/static/{name}?v={version}'
             self.assertIn(url, response.text)

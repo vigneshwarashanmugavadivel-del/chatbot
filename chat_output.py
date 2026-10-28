@@ -11,7 +11,9 @@ from follow_ups import FollowUps, Question
 class AssistantOutput(BaseModel):
     model_config = ConfigDict(extra='forbid')
     reply: str = Field(min_length=1)
-    follow_ups: list[Question] = Field(min_length=4, max_length=4)
+    follow_ups: list[Question] = Field(
+        min_length=4, max_length=4,
+        description='Four distinct suggested customer messages, with content determined by the chat instructions.')
 
     @field_validator('reply')
     @classmethod

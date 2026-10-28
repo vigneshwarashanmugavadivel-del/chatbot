@@ -19,14 +19,14 @@ def call(name, arguments, identifier):
 
 class ProductDetailsTests(unittest.IsolatedAsyncioTestCase):
     async def run_pairing(self, lookup_first, lookup_fails=False):
-        reference = call('get_product_details', {'filters': {'product_ids':['HAZEL-SKU']}, 'region':'AE'}, 'reference')
+        reference = call('get_product_details', {'query':'HAZEL-SKU', 'region':'AE'}, 'reference')
         target = call('search_products', {'query':'coffee table'}, 'target')
         ordered = [reference, target] if lookup_first else [target, reference]
         create = AsyncMock(side_effect=[response(item) for item in ordered] + [response()])
         client = SimpleNamespace(responses=SimpleNamespace(create=create))
 
         async def search(params):
-            if params.filters.product_ids:
+            if params.query == 'HAZEL-SKU':
                 if lookup_fails:
                     raise SearchUnavailable('Reference lookup unavailable.')
                 products = [Product(id='HAZEL-SKU', title='Hazel', category='Sofa', color='Beige')]
@@ -43,7 +43,7 @@ class ProductDetailsTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(final['presentation'])
         self.assertEqual(final['search_state']['query'], 'sofa')
         self.assertEqual(final['search_state']['filters']['max_price'], 5000)
-        lookup_params = next(args.args[0] for args in searcher.search.call_args_list if args.args[0].filters.product_ids)
+        lookup_params = next(args.args[0] for args in searcher.search.call_args_list if args.args[0].query == 'HAZEL-SKU')
         self.assertEqual(lookup_params.region, 'AE')
         self.assertIsNone(lookup_params.filters.max_price)
         tool_outputs = [item for item in create.call_args_list[-1].kwargs['input']

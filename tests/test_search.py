@@ -39,7 +39,7 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(body['collapse']['field'], 'parent_id')
             self.assertEqual(body['from'], 6)
             self.assertEqual(body['size'], 6)
-            query = body['query']['bool']['must'][0]['multi_match']
+            query = body['query']['bool']['must'][0]['dis_max']['queries'][1]['multi_match']
             self.assertIn('title.text^3', query['fields'])
             self.assertEqual(query['operator'], 'and')
             self.assertEqual(query['fuzziness'], 'AUTO')
@@ -67,6 +67,23 @@ class SearchTests(unittest.IsolatedAsyncioTestCase):
         result = await self.searcher.search(ProductSearchRequest(query='unfindable'))
         self.assertEqual(result.products, [])
         self.assertEqual(result.total, 0)
+
+    async def test_retrieval_can_return_more_than_display_limit(self):
+        def handler(request):
+            body = json.loads(request.content.decode().strip().split('\n')[1])
+            self.assertEqual(body['size'], 24)
+            self.assertEqual(body['from'], 24)
+            hits = [{'_source': {'sku': f'SOFA-{i}', 'title': 'Sofa', 'stock': 2}}
+                    for i in range(24)]
+            return httpx.Response(200, json={'responses': [{
+                'hits': {'total': 72, 'hits': hits},
+                'aggregations': {'unique_recs_count': {'value': 72}},
+            }]})
+        self.transport(handler)
+        result = await self.searcher.search(ProductSearchRequest(query='sofa', page=2, limit=24))
+        self.assertEqual(len(result.products), 24)
+        self.assertEqual(result.limit, 24)
+        self.assertEqual(result.pages, 3)
 
     async def test_http_embedded_and_partial_errors_are_sanitized(self):
         for status, payload in [(401, {'error': 'secret'}), (200, {'responses': [{'error': 'secret'}]}),
@@ -120,8 +137,8 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(output['call_id'], 'call_1')
         self.assertEqual(json.loads(output['output'])['products'][0]['price'], '900 AED')
 
-    async def test_tool_validation_blocks_unbounded_queries(self):
-        self.setup_tool('{"query":"sofa","limit":999,"page":1}')
+    async def test_tool_validation_blocks_nonpositive_page_sizes(self):
+        self.setup_tool('{"query":"sofa","limit":0,"page":1}')
         response = await self.client.post('/api/chat', json={'messages': [{'role': 'user', 'content': 'Show sofas'}]})
         self.assertEqual(response.status_code, 200)
         self.search.assert_not_awaited()
@@ -149,7 +166,9 @@ class ToolChatTests(unittest.IsolatedAsyncioTestCase):
     async def test_search_endpoint_and_input_validation(self):
         self.setup_tool()
         self.assertEqual((await self.client.post('/api/search', json={'query': 'sofa'})).status_code, 200)
-        for payload in [{'query': 'sofa', 'filters': {'colors': [' ']}}, {'query': 'sofa', 'limit': 100}, {'query': 'sofa', 'page': 0},
+        self.assertEqual((await self.client.post('/api/search', json={'query': 'sofa', 'limit': 100})).status_code, 200)
+        self.assertEqual(self.search.call_args.args[0].limit, 100)
+        for payload in [{'query': 'sofa', 'filters': {'colors': [' ']}}, {'query': 'sofa', 'limit': 0}, {'query': 'sofa', 'page': 0},
                         {'query': 'sofa', 'index': 'other'}]:
             self.assertEqual((await self.client.post('/api/search', json=payload)).status_code, 422)
 

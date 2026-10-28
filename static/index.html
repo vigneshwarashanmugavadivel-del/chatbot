@@ -7,13 +7,17 @@
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/stream.js" defer></script>
   <script src="/static/follow-ups.js" defer></script>
+  <script src="/static/chat-instructions.js" defer></script>
   <script src="/static/app.js" defer></script>
 </head>
 <body>
   <main class="chat-shell">
     <header>
       <div><p class="brand">ALHUZAIFA</p><p class="subtitle">Your home, thoughtfully considered.</p></div>
-      <button id="reset" class="secondary" type="button">New chat</button>
+      <div class="header-actions">
+        <button id="edit-chat-instructions" class="secondary" type="button" aria-haspopup="dialog">Chat instructions</button>
+        <button id="reset" class="secondary" type="button">New chat</button>
+      </div>
     </header>
     <section id="messages" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions"></section>
     <div id="suggestions" class="suggestions">
@@ -29,5 +33,21 @@
     </form>
     <footer>Product details and prices come from the catalog.</footer>
   </main>
+  <dialog id="chat-instructions-dialog" class="instructions-dialog" aria-labelledby="chat-instructions-title">
+    <form id="chat-instructions-form">
+      <h2 id="chat-instructions-title">Chat instructions</h2>
+      <p id="chat-instructions-help">Set how the assistant talks with you, asks questions, and suggests refinements. Your saved instructions replace the default chat guidance from your next message.</p>
+      <label for="chat-instructions-text">Instructions</label>
+      <textarea id="chat-instructions-text" rows="14" maxlength="20000" aria-describedby="chat-instructions-help" required></textarea>
+      <p id="chat-instructions-feedback" role="status"></p>
+      <div class="instructions-actions">
+        <button id="default-chat-instructions" class="secondary" type="button">Use default</button>
+        <div>
+          <button id="cancel-chat-instructions" class="secondary" type="button">Cancel</button>
+          <button id="save-chat-instructions" class="primary" type="submit">Save instructions</button>
+        </div>
+      </div>
+    </form>
+  </dialog>
 </body>
 </html>

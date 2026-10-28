@@ -19,8 +19,6 @@ class SearchFilters(BaseModel):
     sizes: FilterValues = Field(default_factory=list, description='Catalog size labels, e.g. small or large; not seat count.')
     product_types: FilterValues = Field(default_factory=list, description='Internal catalog types, e.g. simple, configurable, bundle; not categories.')
     brands: FilterValues = Field(default_factory=list)
-    product_ids: FilterValues = Field(default_factory=list, description='Exact Elasticsearch SKU identifiers supplied by the customer or observed in retrieved catalog records. Preserve the full code including hyphens and punctuation; never invent an SKU. Use an empty query for SKU-only lookups.')
-    group_ids: FilterValues = Field(default_factory=list)
     min_price: Amount | None = None
     max_price: Amount | None = None
     currency: Annotated[str, Field(pattern=r'^[A-Z]{3}$')] | None = Field(default=None, description='ISO currency. Defaults to selected storefront currency for price constraints. No exchange-rate conversion.')
@@ -66,7 +64,7 @@ def build_filter_clauses(filters, fields, runtime, currency):
         'categories': 'category', 'colors': 'color', 'materials': 'material',
         'sizes': 'size', 'brands': 'brand',
     }
-    exact_fields = {'product_types': 'product_type', 'product_ids': 'id', 'group_ids': 'group_id'}
+    exact_fields = {'product_types': 'product_type'}
     for name, source in phrase_fields.items():
         values = getattr(filters, name)
         if name == 'categories':

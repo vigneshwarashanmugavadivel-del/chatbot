@@ -50,7 +50,7 @@ class AgenticTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(events[-1]['data']['presentation']['items'][0]['product']['id'], 'FOUND')
 
     async def test_model_can_repair_invalid_arguments_and_continue(self):
-        create = AsyncMock(side_effect=[tool_response(0, {'query':'test','limit':100}),
+        create = AsyncMock(side_effect=[tool_response(0, {'query':'test','limit':0}),
                                         tool_response(1), final_response()])
         searcher = SimpleNamespace(search=AsyncMock(return_value=SearchResult(
             query='attempt 1', products=[], total=0, page=1, pages=0)))

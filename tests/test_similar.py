@@ -52,18 +52,18 @@ class SimilarTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn({'term': {'sku.keyword':'seed'}},query['must_not'])
             self.assertIn('more_like_this', query['should'][0])
             self.assertEqual(body['sort'][0], {'_score':{'order':'desc'}})
-            self.assertEqual(body['size'],8)
+            self.assertEqual(body['size'],24)
             return httpx.Response(200,json={'responses':[{'hits':{'total':1,'hits':[hit('ALTERNATIVE','OTHER')]},
                                                           'aggregations':{'unique_recs_count':{'value':1}}}]})
         self.transport(handler)
         state = ProductSearchRequest(query='Riana', filters={'colors':['beige'],'materials':['fabric'],
-            'max_price':5000,'max_length_cm':250,'product_ids':['SEED'],'group_ids':['FAMILY']},sort='price_asc')
-        result = await self.searcher.similar_products(SimilarRequest(product_id='SEED',search_state=state))
+            'max_price':5000,'max_length_cm':250},sort='price_asc')
+        result = await self.searcher.similar_products(SimilarRequest(product_id='SEED',search_state=state,limit=24))
         self.assertEqual(result.products[0].id, 'ALTERNATIVE')
         self.assertEqual(result.similar_to.id, 'SEED')
         self.assertEqual(result.request.filters.max_price,5000)
-        self.assertEqual(result.request.filters.product_ids,[])
-        self.assertEqual(state.filters.product_ids,['SEED'])
+        self.assertEqual(result.request.query, '')
+        self.assertEqual(state.query, 'Riana')
 
     async def test_missing_source_or_category_does_not_produce_unrelated_recommendations(self):
         for source in [[],[hit(stock=0)],[hit(category_vue='')]]:
@@ -98,5 +98,5 @@ class SimilarTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(response.status_code,200)
                 self.assertEqual(response.json()['products'][0]['id'],'OTHER')
                 self.assertEqual(response.json()['follow_ups'], [])
-                for payload in [{'product_id':''},{'product_id':'SEED','limit':100},{'product_id':'SEED','category':'fake'}]:
+                for payload in [{'product_id':''},{'product_id':'SEED','limit':0},{'product_id':'SEED','category':'fake'}]:
                     self.assertEqual((await client.post('/api/products/similar',json=payload)).status_code,422)

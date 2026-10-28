@@ -44,7 +44,7 @@ function renderFollowUps(questions) {
   const group = document.createElement('div');
   group.className = 'follow-up-suggestions';
   group.setAttribute('role', 'group');
-  group.setAttribute('aria-label', 'Suggested follow-up questions');
+  group.setAttribute('aria-label', 'Suggested replies');
   for (const choice of choices) {
     const button = document.createElement('button');
     button.type = 'button';
@@ -340,7 +340,8 @@ async function submitMessage() {
     const response = await fetch('/api/chat/stream', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ messages: [...history.slice(-20), { role: 'user', content }], search_state: activeSearch }),
+      body: JSON.stringify({ messages: [...history.slice(-20), { role: 'user', content }], search_state: activeSearch,
+        chat_instructions: typeof getChatInstructions === 'function' ? getChatInstructions() : null }),
     });
     if (!response.ok) {
       const error = await response.json();
