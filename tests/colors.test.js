@@ -30,7 +30,7 @@ function setup(fail = false, filters = { colors: ['beige'], max_price: 5000 }) {
   const nodes = {};
   const requests = [];
   const product = { id: 'BEIGE', title: 'Riana', color: 'Beige', stock: 2, display_price: '1,500 AED',
-    image_url: 'https://example.com/beige.jpg', dimension: 'Length:260 cm',
+    url: 'https://example.com/beige', image_url: 'https://example.com/beige.jpg', dimension: 'Length:260 cm',
     color_options: [{ id: 'BEIGE', color: 'Beige' }, { id: 'GREY', color: 'Grey' }] };
   const state = { filters, region: 'AE' };
   const search = { products: [product], request: state };
@@ -48,7 +48,7 @@ function setup(fail = false, filters = { colors: ['beige'], max_price: 5000 }) {
       requests.push({ url, body: JSON.parse(options.body) });
       if (url === '/api/chat/stream') return { ok: !fail, json: async () => ({ detail: 'Search is temporarily unavailable.' }) };
       return { ok: !fail, json: async () => fail ? { detail: 'That colour is no longer available.' }
-        : { ...product, id: 'GREY', color: 'Grey', display_price: '1,800 AED', image_url: 'https://example.com/grey.jpg', dimension: 'Length:265 cm' } };
+        : { ...product, id: 'GREY', color: 'Grey', display_price: '1,800 AED', url: 'https://example.com/grey', image_url: 'https://example.com/grey.jpg', dimension: 'Length:265 cm' } };
     },
   });
   vm.runInContext(fs.readFileSync('static/app.js', 'utf8'), context);
@@ -60,6 +60,27 @@ function setup(fail = false, filters = { colors: ['beige'], max_price: 5000 }) {
   const block = context.renderPresentation(presentation);
   return { context, nodes, block, requests, search, state };
 }
+
+test('product cards link to the catalog landing page in a new tab', () => {
+  const { block } = setup();
+  const link = block.querySelector('.product-link');
+  assert.equal(link.tag, 'a');
+  assert.equal(link.href, 'https://example.com/beige');
+  assert.equal(link.target, '_blank');
+  assert.equal(link.rel, 'noopener noreferrer');
+  assert.equal(link.attrs['aria-label'], 'Riana (opens in a new tab)');
+  assert.equal(link.textContent, 'Riana');
+  assert(!descendants(link).some(node => node.tag === 'button'));
+});
+
+test('cards with missing or unsafe landing URLs remain unlinked', () => {
+  const { context } = setup();
+  for (const url of [undefined, null, '', '/relative', 'javascript:alert(1)', 'https://user:pass@example.com/']) {
+    const card = context.createProductCard({ title: 'Table', url }, { products: [] });
+    assert.equal(card.querySelector('.product-link'), null);
+    assert(card.textContent.includes('Table'));
+  }
+});
 
 test('chat requests include the selected custom chat instructions', async () => {
   const { context, nodes, requests } = setup();
@@ -94,6 +115,7 @@ test('selecting a colour replaces image, price, specifications and SKU on the sa
   assert.deepEqual(requests[0].body, { product_id: 'BEIGE', variant_id: 'GREY', search_state: state });
   const elements = descendants(block);
   assert(elements.some(node => node.tag === 'img' && node.src === 'https://example.com/grey.jpg'));
+  assert.equal(block.querySelector('.product-link').href, 'https://example.com/grey');
   assert(block.textContent.includes('1,800 AED'));
   assert(block.textContent.includes('Length: 265 cm'));
   assert(block.textContent.includes('SKU: GREY'));

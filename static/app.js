@@ -178,7 +178,19 @@ function createProductCard(product, search) {
     body.append(category);
   }
   const title = document.createElement('h3');
-  title.textContent = product.title;
+  const productUrl = safeLink(product.url);
+  if (productUrl) {
+    const link = document.createElement('a');
+    link.className = 'product-link';
+    link.href = productUrl;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = product.title;
+    link.setAttribute('aria-label', `${product.title} (opens in a new tab)`);
+    title.append(link);
+  } else {
+    title.textContent = product.title;
+  }
   body.append(title);
   if (product.description) {
     const description = document.createElement('p');
