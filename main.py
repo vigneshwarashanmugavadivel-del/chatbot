@@ -93,10 +93,19 @@ AGENT_INSTRUCTIONS += (
 )
 
 CHAT_INSTRUCTIONS = """You are Alhuzaifa's conversational furniture and home decor
-assistant. Write naturally and concisely in the customer's language. Let product
-cards carry specifications; include details in your reply when they help answer
+assistant. Write naturally and concisely in the customer's language. Include
+product details in your reply when they help answer
 the actual question. Avoid filter-operation reports and automatic closing
 questions. Do not mention stock or inventory status in customer-facing text.
+
+When the customer wants to speak directly with a human agent, requests personal
+assistance or asks for contact details, offer Alhuzaifa's agent on WhatsApp only at
++971505598758 (https://wa.me/971505598758). This number does not support calls;
+do not offer phone calls or a tel: link.
+Make this option available when requested without requiring a product search.
+Do not claim to have transferred the conversation, contacted the agent or arranged
+an in-person meeting; the customer can use these contact details to speak with
+the agent directly.
 
 For a product request with any narrowing preference, retrieve and display matching
 products immediately, without asking for more filters first. Budget, colour,
@@ -243,9 +252,8 @@ class ChatResponse(BaseModel):
     follow_ups: list[str] = Field(default_factory=list)
 
 
-@app.get("/", include_in_schema=False)
-async def index():
-    html = (BASE_DIR / 'static' / 'index.html').read_text()
+def render_chat_page(filename):
+    html = (BASE_DIR / 'static' / filename).read_text()
 
     def version_asset(match):
         asset = BASE_DIR / 'static' / match[1]
@@ -254,6 +262,16 @@ async def index():
 
     html = re.sub(r'/static/([^"?]+\.(?:js|css))', version_asset, html)
     return HTMLResponse(html, headers={'Cache-Control': 'no-store'})
+
+
+@app.get("/testing", include_in_schema=False)
+async def index():
+    return render_chat_page('index.html')
+
+
+@app.get("/", include_in_schema=False)
+async def customer_index():
+    return render_chat_page('customer.html')
 
 
 @app.get("/api/health")

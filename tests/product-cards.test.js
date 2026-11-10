@@ -30,10 +30,8 @@ function setup(fail = false, filters = { colors: ['beige'], max_price: 5000 }) {
   const nodes = {};
   const requests = [];
   const product = { id: 'BEIGE', title: 'Riana', color: 'Beige', stock: 2, display_price: '1,500 AED',
-    url: 'https://example.com/beige', image_url: 'https://example.com/beige.jpg', dimension: 'Length:260 cm',
-    color_options: [{ id: 'BEIGE', color: 'Beige' }, { id: 'GREY', color: 'Grey' }] };
+    url: 'https://example.com/beige', image_url: 'https://example.com/beige.jpg' };
   const state = { filters, region: 'AE' };
-  const search = { products: [product], request: state };
   const presentation = { kind: 'recommendations', title: 'Sofas', fields: [], items: [{ product, request: state }] };
   const context = vm.createContext({
     URL, AbortSignal, initialState: state,
@@ -47,8 +45,7 @@ function setup(fail = false, filters = { colors: ['beige'], max_price: 5000 }) {
       if (url === '/api/health') return { json: async () => ({ configured: true }) };
       requests.push({ url, body: JSON.parse(options.body) });
       if (url === '/api/chat/stream') return { ok: !fail, json: async () => ({ detail: 'Search is temporarily unavailable.' }) };
-      return { ok: !fail, json: async () => fail ? { detail: 'That colour is no longer available.' }
-        : { ...product, id: 'GREY', color: 'Grey', display_price: '1,800 AED', url: 'https://example.com/grey', image_url: 'https://example.com/grey.jpg', dimension: 'Length:265 cm' } };
+      throw new Error(`Unexpected request: ${url}`);
     },
   });
   vm.runInContext(fs.readFileSync('static/app.js', 'utf8'), context);
@@ -58,7 +55,7 @@ function setup(fail = false, filters = { colors: ['beige'], max_price: 5000 }) {
       product: { ...product, id: 'OTHER', title: 'Alternative' }, request: state }] },
     search_state: state, follow_ups: ['Which is easiest to clean?', 'Can I see these in grey?', 'How do these compare?', 'What goes with these?'] });
   const block = context.renderPresentation(presentation);
-  return { context, nodes, block, requests, search, state };
+  return { context, nodes, block, requests, state };
 }
 
 test('product cards link to the catalog landing page in a new tab', () => {
@@ -93,55 +90,6 @@ test('chat requests include the selected custom chat instructions', async () => 
   assert.equal(context.getChatInstructions(), 'Reply in short Hindi sentences.');
 });
 
-test('card specifications separate joined labels and words without catalog-specific headings', () => {
-  const { context } = setup();
-  const card = context.createProductCard({ id:'A', title:'Table', brand:'Al Huzaifa',
-    dimension:'Height: 65 cmSmall: Diameter:40 cmSeat Height:45 cm',
-    material:'Frame: Wood, acrylicTop: Sintered stoneSideboard',
-  }, { products:[], request:{} });
-  const specs = descendants(card).filter(node => node.tag === 'dd').map(node => node.textContent);
-  assert(specs.includes('Height: 65 cm\nSmall: Diameter: 40 cm\nSeat Height: 45 cm'));
-  assert(specs.includes('Frame: Wood, acrylic\nTop: Sintered stone Sideboard'));
-  assert(specs.includes('Al Huzaifa'));
-  assert(descendants(card).some(node => node.tag === 'dt' && node.textContent === 'Dimensions:'));
-});
-
-test('selecting a colour replaces image, price, specifications and SKU on the same card', async () => {
-  const { context, nodes, block, requests, search, state } = setup();
-  const button = block.querySelectorAll('.colour-option').find(node => node.textContent === 'Grey');
-  await button.listeners.click();
-  assert.equal(requests.length, 1);
-  assert.equal(requests[0].url, '/api/products/variant');
-  assert.deepEqual(requests[0].body, { product_id: 'BEIGE', variant_id: 'GREY', search_state: state });
-  const elements = descendants(block);
-  assert(elements.some(node => node.tag === 'img' && node.src === 'https://example.com/grey.jpg'));
-  assert.equal(block.querySelector('.product-link').href, 'https://example.com/grey');
-  assert(block.textContent.includes('1,800 AED'));
-  assert(block.textContent.includes('Length: 265 cm'));
-  assert(block.textContent.includes('SKU: GREY'));
-  assert(!block.textContent.includes('SKU: BEIGE'));
-  assert.equal(block.querySelector('[aria-pressed="true"]').textContent, 'Grey');
-  assert.equal(block.querySelector('[aria-pressed="true"]').focused, true);
-  assert.equal(nodes['#send'].disabled, false);
-  assert(vm.runInContext('history[history.length - 1].content', context).includes('SKU GREY'));
-});
-
-test('failed selection retains the current card and displays the error', async () => {
-  const { nodes, block, search } = setup(true);
-  await block.querySelectorAll('.colour-option').find(node => node.textContent === 'Grey').listeners.click();
-  assert(block.textContent.includes('SKU: BEIGE'));
-  assert(block.textContent.includes('That colour is no longer available.'));
-  assert.equal(search.products[0].id, 'BEIGE');
-  assert.equal(block.querySelector('[aria-pressed="true"]').textContent, 'Beige');
-  assert.equal(nodes['#send'].disabled, false);
-});
-
-test('selecting the current colour makes no additional request', async () => {
-  const { block, requests } = setup();
-  await block.querySelector('[aria-pressed="true"]').listeners.click();
-  assert.equal(requests.length, 0);
-});
-
 test('Show similar displays alternative cards above the reply and records them for follow-ups', async () => {
   const { context, nodes, block, requests, state } = setup(false, { max_price: 5000 });
   await block.querySelector('.show-similar').listeners.click();
@@ -149,7 +97,7 @@ test('Show similar displays alternative cards above the reply and records them f
   assert.deepEqual(requests[0].body.search_state,state);
   assert(requests[0].body.messages.at(-1).content.includes('SKU BEIGE'));
   assert(nodes['#messages'].textContent.includes('Similar options'));
-  assert(nodes['#messages'].textContent.includes('SKU: OTHER'));
+  assert(nodes['#messages'].textContent.includes('Alternative'));
   const children=nodes['#messages'].children;
   const resultIndex = children.findLastIndex(node => node.className === 'search-results');
   const replyIndex = children.findLastIndex(node => node.className === 'message assistant');
@@ -163,7 +111,7 @@ test('Show similar reports a failure and keeps existing cards usable', async () 
   const { nodes, block } = setup(true);
   await block.querySelector('.show-similar').listeners.click();
   assert(nodes['#status'].textContent.includes('temporarily unavailable'));
-  assert(block.textContent.includes('SKU: BEIGE'));
+  assert.equal(block.querySelector('.product-link').href, 'https://example.com/beige');
   assert.equal(block.querySelector('.show-similar').disabled,false);
 });
 

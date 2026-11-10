@@ -115,9 +115,8 @@ function renderPresentation(presentation, before = null) {
   } else {
     const grid = document.createElement('div');
     grid.className = 'product-grid';
-    const products = presentation.items.map(item => item.product);
     for (const item of presentation.items) {
-      grid.append(createProductCard(item.product, { products, request: item.request }));
+      grid.append(createProductCard(item.product));
     }
     block.append(grid);
   }
@@ -130,7 +129,6 @@ function renderPresentation(presentation, before = null) {
 function setBusy(value) {
   busy = value;
   send.disabled = reset.disabled = input.disabled = value;
-  document.querySelectorAll('.colour-option').forEach((button) => { button.disabled = value; });
   document.querySelectorAll('.show-similar').forEach((button) => { button.disabled = value; });
   document.querySelectorAll('.follow-up-link').forEach((button) => { button.disabled = value; });
 }
@@ -145,7 +143,7 @@ function formatSpecifications(value) {
     .trim();
 }
 
-function createProductCard(product, search) {
+function createProductCard(product) {
   const card = document.createElement('article');
   card.className = 'product-card';
   const media = document.createElement('div');
@@ -198,65 +196,6 @@ function createProductCard(product, search) {
     description.textContent = product.description;
     body.append(description);
   }
-  const specs = document.createElement('dl');
-  specs.className = 'product-specs';
-  for (const [label, value] of [
-    ['Brand', product.brand],
-    ['Colour', product.color],
-    ['Material and finish', product.material],
-    ['Dimensions', product.dimension],
-    ['Size', product.size],
-  ]) {
-    if (!value) continue;
-    const row = document.createElement('div');
-    const name = document.createElement('dt');
-    name.textContent = `${label}:`;
-    const detail = document.createElement('dd');
-    detail.textContent = ['Material and finish', 'Dimensions', 'Size'].includes(label)
-      ? formatSpecifications(value) : String(value);
-    row.append(name, detail);
-    specs.append(row);
-  }
-  if (specs.childElementCount) body.append(specs);
-  const options = product.color_options || [];
-  if (options.length) {
-    const selectedOption = options.find((option) => option.id === product.id)
-      || options.find((option) => product.color && option.color.trim().toLowerCase() === product.color.trim().toLowerCase());
-    const colors = document.createElement('div');
-    colors.className = 'product-colors';
-    colors.setAttribute('role', 'group');
-    colors.setAttribute('aria-label', `Available colours for ${product.title}`);
-    const label = document.createElement('p');
-    label.className = 'product-colors-label';
-    label.textContent = selectedOption ? `Available colours · ${selectedOption.color} selected` : 'Available colours';
-    colors.append(label);
-    const choices = document.createElement('div');
-    choices.className = 'product-color-options';
-    const feedback = document.createElement('p');
-    feedback.className = 'product-color-status';
-    feedback.setAttribute('role', 'status');
-    for (const option of options) {
-      const button = document.createElement('button');
-      button.type = 'button';
-      button.className = 'colour-option';
-      button.textContent = option.color;
-      button.disabled = busy;
-      button.setAttribute('aria-pressed', String(option === selectedOption));
-      button.addEventListener('click', () => {
-        if (option !== selectedOption) return selectProductColor(card, product, option, search, feedback);
-      });
-      choices.append(button);
-    }
-    colors.append(choices, feedback);
-    if (product.color_options_error) feedback.textContent = product.color_options_error;
-    if (product.variant_selected) {
-      const note = document.createElement('p');
-      note.className = 'product-variant-note';
-      note.textContent = 'Colour changed for this product.';
-      colors.append(note);
-    }
-    body.append(colors);
-  }
   const purchase = document.createElement('div');
   purchase.className = 'product-purchase';
   const price = document.createElement('p');
@@ -270,12 +209,6 @@ function createProductCard(product, search) {
     price.append(original);
   }
   purchase.append(price);
-  if (product.id) {
-    const sku = document.createElement('p');
-    sku.className = 'product-sku';
-    sku.textContent = `SKU: ${product.id}`;
-    purchase.append(sku);
-  }
   body.append(purchase);
   if (product.id) {
     const similar = document.createElement('button');
@@ -284,7 +217,7 @@ function createProductCard(product, search) {
     similar.textContent = 'Show similar';
     similar.disabled = busy;
     similar.setAttribute('aria-label', `Show products similar to ${product.title}`);
-    similar.addEventListener('click', () => showSimilarProducts(product, search));
+    similar.addEventListener('click', () => showSimilarProducts(product));
     body.append(similar);
   }
   card.append(body);
@@ -295,41 +228,6 @@ async function showSimilarProducts(product) {
   if (busy) return;
   input.value = `Show products similar to ${product.title} (SKU ${product.id}).`;
   return submitMessage();
-}
-
-async function selectProductColor(card, product, option, search, feedback) {
-  if (busy || product.id === option.id) return;
-  setBusy(true);
-  let selectedButton = null;
-  feedback.textContent = `Loading ${option.color}…`;
-  try {
-    const response = await fetch('/api/products/variant', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ product_id: product.id, variant_id: option.id, search_state: search.request || {} }),
-      signal: AbortSignal.timeout(60000),
-    });
-    const data = await response.json();
-    if (!response.ok) throw new Error(typeof data.detail === 'string' ? data.detail : 'Could not load that colour. Please try again.');
-    const selected = { ...data, variant_selected: true };
-    const index = search.products.findIndex((item) => item.id === product.id);
-    if (index !== -1) search.products[index] = selected;
-    const replacement = createProductCard(selected, search);
-    card.replaceWith(replacement);
-    selectedButton = replacement.querySelector('[aria-pressed="true"]');
-    // Keep follow-up references grounded in the SKU the customer is now viewing.
-    history.push(
-      { role: 'user', content: `For ${product.title}, select the ${option.color} colour (SKU ${option.id}).`.slice(0, 4000) },
-      { role: 'assistant', content: `Showing ${data.title} in ${data.color}, SKU ${data.id}, ${data.display_price || 'price unknown'}. Current displayed products in order: ${search.products.map((item) => `${item.title} (${item.color || 'colour unknown'}, SKU ${item.id})`).join('; ')}`.slice(0, 4000) },
-    );
-    history = history.slice(-20);
-    status.textContent = `Showing ${data.title} in ${data.color}.`;
-  } catch (error) {
-    feedback.textContent = error.name === 'TimeoutError' ? 'Loading this colour timed out. Please try again.' : error.message;
-  } finally {
-    setBusy(false);
-    selectedButton?.focus();
-  }
 }
 
 async function submitMessage() {

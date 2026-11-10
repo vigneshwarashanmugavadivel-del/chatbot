@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Alhuzaifa · Shopping assistant</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/stream.js" defer></script>
+  <script src="/static/follow-ups.js" defer></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <main class="chat-shell">
+    <header>
+      <div><p class="brand">ALHUZAIFA</p><p class="subtitle">Your home, thoughtfully considered.</p></div>
+      <div class="header-actions">
+        <button id="reset" class="secondary" type="button">New chat</button>
+      </div>
+    </header>
+    <section id="messages" role="log" aria-label="Conversation" aria-live="polite" aria-relevant="additions"></section>
+    <div id="suggestions" class="suggestions">
+      <button type="button">Show me sofas</button>
+      <button type="button">Ideas for a small living room</button>
+      <button type="button">How do I choose a dining table?</button>
+    </div>
+    <p id="status" role="status"></p>
+    <form id="chat-form">
+      <label class="sr-only" for="message">Your message</label>
+      <textarea id="message" rows="2" maxlength="4000" placeholder="Tell me what you have in mind…" required></textarea>
+      <button id="send" type="submit">Send <span aria-hidden="true">↗</span></button>
+    </form>
+    <footer>Product details and prices come from the catalog.</footer>
+  </main>
+</body>
+</html>

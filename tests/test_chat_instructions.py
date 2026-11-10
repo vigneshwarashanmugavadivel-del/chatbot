@@ -14,6 +14,17 @@ from test_streaming import FakeStream
 
 
 class ChatInstructionsTests(unittest.IsolatedAsyncioTestCase):
+    async def test_customer_page_omits_editor_and_internal_page_keeps_it(self):
+        async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
+            customer = await client.get('/')
+            internal = await client.get('/testing')
+        self.assertEqual(customer.status_code, 200)
+        self.assertNotIn('chat-instructions', customer.text)
+        self.assertIn('id="chat-form"', customer.text)
+        self.assertIn('/static/app.js?v=', customer.text)
+        self.assertIn('id="edit-chat-instructions"', internal.text)
+        self.assertIn('/static/chat-instructions.js?v=', internal.text)
+
     async def test_editor_loads_chat_defaults_without_agent_instructions(self):
         async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url='http://test') as client:
             response = await client.get('/api/chat/instructions')
