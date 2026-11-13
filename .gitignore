@@ -22,3 +22,7 @@ logs/
 # Generated files
 *.pt
 *.pth
+
+# Local catalog search artifacts
+sample_search.py
+search_output.json
