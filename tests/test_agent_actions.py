@@ -13,7 +13,7 @@ def catalog_result(identifier='A', region=None, **values):
 
 
 class ActionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_model_selects_up_to_eight_from_a_larger_retrieval(self):
+    async def test_model_selects_up_to_fifteen_from_a_larger_retrieval(self):
         session = AgentSession()
         products = [Product(id=str(i), title=f'Product {i}', stock=2) for i in range(24)]
         source = SearchResult(query='catalog', products=products, total=24, page=1, pages=1, limit=24)
@@ -22,13 +22,13 @@ class ActionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(searcher.search.call_args.args[0].limit, 24)
         self.assertEqual(len(data['products']), 24)
         self.assertEqual(events, [])
-        references = [{'retrieval_id':data['retrieval_id'], 'product_id':str(i)} for i in range(23, 14, -1)]
+        references = [{'retrieval_id':data['retrieval_id'], 'product_id':str(i)} for i in range(23, 6, -1)]
         for presentation in ['recommendations', 'comparison']:
-            arguments = {'presentation':presentation, 'products':references[:8], 'fields':['material']}
+            arguments = {'presentation':presentation, 'products':references[:15], 'fields':['material']}
             result, _ = await session.execute('display_products', json.dumps(arguments), None)
-            self.assertEqual(result['product_ids'], [str(i) for i in range(23, 15, -1)])
+            self.assertEqual(result['product_ids'], [str(i) for i in range(23, 8, -1)])
             previous = session.presentation
-            arguments['products'] = references
+            arguments['products'] = references[:16]
             with self.assertRaises(ValueError):
                 await session.execute('display_products', json.dumps(arguments), None)
             self.assertIs(session.presentation, previous)

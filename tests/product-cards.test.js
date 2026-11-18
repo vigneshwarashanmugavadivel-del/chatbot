@@ -58,6 +58,33 @@ function setup(fail = false, filters = { colors: ['beige'], max_price: 5000 }) {
   return { context, nodes, block, requests, state };
 }
 
+test('agent replies show a clickable WhatsApp link and preserve surrounding text', async () => {
+  const { context, nodes } = setup();
+  const reply = 'Message our agent on WhatsApp at +971505598758: https://wa.me/971505598758.';
+  context.readChatStream = async (_response, onEvent) => {
+    onEvent({ type: 'delta', text: reply.slice(0, 45) });
+    onEvent({ type: 'delta', text: reply.slice(45) });
+    return { reply, presentation: null, search_state: null, follow_ups: [] };
+  };
+  nodes['#message'].value = 'I want to speak to an agent';
+  await context.submitMessage();
+  const bubble = descendants(nodes['#messages']).find(node => node.className === 'message assistant' && node.textContent === reply);
+  assert(bubble);
+  const links = descendants(bubble).filter(node => node.tag === 'a');
+  assert.equal(links.length, 1);
+  assert.equal(links[0].href, 'https://wa.me/971505598758');
+  assert.equal(links[0].target, '_blank');
+  assert.equal(links[0].rel, 'noopener noreferrer');
+});
+
+test('reply links keep markup inert and reject credential URLs', () => {
+  const { context } = setup();
+  const text = '<script>alert(1)</script> javascript:alert(1) https://user:pass@example.com/';
+  const bubble = context.addMessage('assistant', text);
+  assert.equal(bubble.textContent, text);
+  assert.equal(descendants(bubble).length, 0);
+});
+
 test('product cards link to the catalog landing page in a new tab', () => {
   const { block } = setup();
   const link = block.querySelector('.product-link');

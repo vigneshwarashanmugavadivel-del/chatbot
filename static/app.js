@@ -13,7 +13,8 @@ function addMessage(role, content) {
   const bubble = document.createElement('div');
   bubble.className = `message ${role}`;
   bubble.dir = 'auto';
-  bubble.textContent = content;
+  if (role === 'assistant') renderAssistantText(bubble, content);
+  else bubble.textContent = content;
   messages.append(bubble);
   messages.scrollTop = messages.scrollHeight;
   return bubble;
@@ -35,6 +36,25 @@ function safeLink(value) {
     const url = new URL(value);
     return ['https:', 'http:'].includes(url.protocol) && !url.username ? url.href : null;
   } catch { return null; }
+}
+
+function renderAssistantText(bubble, content) {
+  bubble.replaceChildren();
+  let offset = 0;
+  for (const match of content.matchAll(/https?:\/\/[^\s<>()]+/g)) {
+    const urlText = match[0].replace(/[.,!?;:]+$/, '');
+    const href = safeLink(urlText);
+    if (!href) continue;
+    bubble.append(content.slice(offset, match.index));
+    const link = document.createElement('a');
+    link.href = href;
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.textContent = urlText;
+    bubble.append(link);
+    offset = match.index + urlText.length;
+  }
+  bubble.append(content.slice(offset));
 }
 
 function renderFollowUps(questions) {
@@ -241,7 +261,7 @@ async function submitMessage() {
   let productBlock = null;
   function updateReply(text) {
     if (!assistantBubble) assistantBubble = addMessage('assistant', '');
-    assistantBubble.textContent = text;
+    renderAssistantText(assistantBubble, text);
     assistantBubble.hidden = !text;
     messages.scrollTop = messages.scrollHeight;
   }

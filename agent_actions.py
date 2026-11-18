@@ -21,7 +21,7 @@ class ProductReference(BaseModel):
 class DisplayRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     presentation: Literal['recommendations', 'comparison', 'text']
-    products: list[ProductReference] = Field(default_factory=list, max_length=8)
+    products: list[ProductReference] = Field(default_factory=list, max_length=15)
     title: str | None = Field(default=None, max_length=160)
     fields: list[ComparisonField] = Field(
         default_factory=list, max_length=8,
@@ -66,7 +66,7 @@ def action_tool(name, description, schema):
 
 DISPLAY_TOOL = action_tool('display_products',
     'Choose what the customer sees this turn: ordered recommendation cards, a comparison, or text only. '
-    'Select at most 8 products to display; retrieval tools can return more candidates for you to evaluate. '
+    'Select at most 15 products to display; retrieval tools can return more candidates for you to evaluate. '
     'Select exact retrieval_id/product_id pairs returned by retrieval tools during this turn. '
     'The backend renders original catalog data; unknown products are rejected. Comparison fields use original values, with missing facts labelled as not listed. '
     'Each successful call replaces the current turn presentation without changing preferences. It returns confirmation so you can align the final answer. '
